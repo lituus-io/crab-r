@@ -1,0 +1,59 @@
+# Author: spicyzhug@gmail.com
+# Copyright: lituus-io, all rights reserved
+
+# Dependency policy: the only third-party crates any member may name under
+# [dependencies] are graph-r, link-r and objstore-r (plus other crab-r crates).
+# Dev tooling (proptest, criterion, libfuzzer-sys) is allowed in
+# [dev-dependencies] and the fuzz crate only. Enforced by scripts/check_deps.py.
+
+[workspace]
+resolver = "2"
+members = ["crates/crab-core", "crates/crab-sql", "crates/crab-exec", "crates/crab-catalog", "crates/crab-ir", "crates/crab-verify", "crates/crab-values", "crates/crab-grammar", "crates/crab-link", "crates/crab-lineage", "crates/crab-meta", "crates/crab-describe", "crates/crab-prompt", "crates/crab-engine", "crates/crab-llm", "crates/crab-eval"]
+# The fuzz crate needs cargo-fuzz and is checked separately:
+#   cargo check --manifest-path fuzz/Cargo.toml --all-targets
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/lituus-io/crab-r"
+authors = ["lituus-io <spicyzhug@gmail.com>"]
+publish = false
+
+[workspace.dependencies]
+graph-r = { path = "../../code_backup/graph-r", default-features = false }
+objstore-r = { path = "../../code_backup/objstore-r", default-features = false }
+crab-core = { path = "crates/crab-core" }
+crab-llm = { path = "crates/crab-llm" }
+crab-sql = { path = "crates/crab-sql" }
+crab-exec = { path = "crates/crab-exec" }
+crab-catalog = { path = "crates/crab-catalog" }
+crab-ir = { path = "crates/crab-ir" }
+crab-verify = { path = "crates/crab-verify" }
+crab-values = { path = "crates/crab-values" }
+crab-grammar = { path = "crates/crab-grammar" }
+crab-link = { path = "crates/crab-link" }
+crab-lineage = { path = "crates/crab-lineage" }
+crab-meta = { path = "crates/crab-meta" }
+crab-describe = { path = "crates/crab-describe" }
+crab-prompt = { path = "crates/crab-prompt" }
+crab-engine = { path = "crates/crab-engine" }
+link-r = { path = "../../code_backup/link-r", default-features = false }
+criterion = { version = "0.5", default-features = false }
+# Dev only: reqwest (inside objstore-r's `http`) needs a tokio reactor, so
+# integration tests that make real calls run on tokio. Never a [dependency].
+tokio = { version = "1.40", default-features = false, features = ["rt", "macros", "time"] }
+proptest = "1.5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.bench]
+inherits = "release"
+lto = "fat"
+debug = true

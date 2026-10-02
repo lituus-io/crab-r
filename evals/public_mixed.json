@@ -1,0 +1,198 @@
+[
+ {
+  "question_id": "tv-01",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "How many users are from Brazil?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.users` WHERE country = 'Brasil'"
+ },
+ {
+  "question_id": "tv-02",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "How many orders were returned?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.orders` WHERE status = 'Returned'"
+ },
+ {
+  "question_id": "tv-03",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "How many users signed up through facebook?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.users` WHERE traffic_source = 'Facebook'"
+ },
+ {
+  "question_id": "tv-04",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "How many female users are there?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.users` WHERE gender = 'F'"
+ },
+ {
+  "question_id": "tv-05",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "How many users live in the city of Sao Paulo?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.users` WHERE city = 'S\u00e3o Paulo'"
+ },
+ {
+  "question_id": "tv-06",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "How many events came from the firefox browser?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.events` WHERE browser = 'Firefox'"
+ },
+ {
+  "question_id": "tv-07",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "How many Purchase events were recorded?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.events` WHERE event_type = 'purchase'"
+ },
+ {
+  "question_id": "tv-08",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "How many products are in the jeans category?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.products` WHERE category = 'Jeans'"
+ },
+ {
+  "question_id": "tv-09",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "How many products does the brand Levis have?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.products` WHERE brand = \"Levi's\""
+ },
+ {
+  "question_id": "tv-10",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "What is the average retail price of products in the womens department?",
+  "SQL": "SELECT AVG(retail_price) FROM `bigquery-public-data.thelook_ecommerce.products` WHERE department = 'Women'"
+ },
+ {
+  "question_id": "tv-11",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "moderate",
+  "question": "How many products are stocked by the Memphis distribution center?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.products` AS p JOIN `bigquery-public-data.thelook_ecommerce.distribution_centers` AS d ON p.distribution_center_id = d.id WHERE d.name = 'Memphis TN'"
+ },
+ {
+  "question_id": "tv-12",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "moderate",
+  "question": "How many cancelled orders were placed by users from south korea?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.orders` AS o JOIN `bigquery-public-data.thelook_ecommerce.users` AS u ON o.user_id = u.id WHERE o.status = 'Cancelled' AND u.country = 'South Korea'"
+ },
+ {
+  "question_id": "tv-13",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "moderate",
+  "question": "What is the total sale price of complete order items for the Calvin Klein brand?",
+  "SQL": "SELECT SUM(oi.sale_price) FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi JOIN `bigquery-public-data.thelook_ecommerce.products` AS p ON oi.product_id = p.id WHERE oi.status = 'Complete' AND p.brand = 'Calvin Klein'"
+ },
+ {
+  "question_id": "tv-14",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "How many users in the state of Minas Gerais came from search?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.users` WHERE state = 'Minas Gerais' AND traffic_source = 'Search'"
+ },
+ {
+  "question_id": "tv-15",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "moderate",
+  "question": "Which traffic source brought the most users from the united kingdom, and how many users?",
+  "SQL": "SELECT traffic_source, COUNT(*) AS n FROM `bigquery-public-data.thelook_ecommerce.users` WHERE country = 'United Kingdom' GROUP BY traffic_source ORDER BY n DESC LIMIT 1"
+ },
+ {
+  "question_id": "tv-16",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "How many home page events came from Internet Explorer?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.events` WHERE event_type = 'home' AND browser = 'IE'"
+ },
+ {
+  "question_id": "tv-17",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "moderate",
+  "question": "How many shipped order items are in the tops and tees category?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi JOIN `bigquery-public-data.thelook_ecommerce.products` AS p ON oi.product_id = p.id WHERE oi.status = 'Shipped' AND p.category = 'Tops & Tees'"
+ },
+ {
+  "question_id": "tv-18",
+  "db_id": "thelook_ecommerce",
+  "difficulty": "simple",
+  "question": "How many users signed up via email in France?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.users` WHERE traffic_source = 'Email' AND country = 'France'"
+ },
+ {
+  "question_id": "px-01",
+  "db_id": "public",
+  "difficulty": "simple",
+  "question": "How many bike share stations are there in Austin?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.austin_bikeshare.bikeshare_stations`"
+ },
+ {
+  "question_id": "px-02",
+  "db_id": "public",
+  "difficulty": "simple",
+  "question": "What is the average duration in minutes of Austin bike share trips?",
+  "SQL": "SELECT AVG(duration_minutes) FROM `bigquery-public-data.austin_bikeshare.bikeshare_trips`"
+ },
+ {
+  "question_id": "px-03",
+  "db_id": "public",
+  "difficulty": "simple",
+  "question": "What is the total dock capacity of all San Francisco bike share stations?",
+  "SQL": "SELECT SUM(capacity) FROM `bigquery-public-data.san_francisco_bikeshare.bikeshare_station_info`"
+ },
+ {
+  "question_id": "px-04",
+  "db_id": "public",
+  "difficulty": "simple",
+  "question": "How many New York Citi Bike stations have a capacity of more than 50 docks?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.new_york_citibike.citibike_stations` WHERE capacity > 50"
+ },
+ {
+  "question_id": "px-05",
+  "db_id": "public",
+  "difficulty": "simple",
+  "question": "How many babies named Emma were born in Texas in 2010?",
+  "SQL": "SELECT SUM(number) FROM `bigquery-public-data.usa_names.usa_1910_current` WHERE name = 'Emma' AND state = 'TX' AND year = 2010"
+ },
+ {
+  "question_id": "px-06",
+  "db_id": "public",
+  "difficulty": "moderate",
+  "question": "What was the most common male baby name in the US in 1990, and how many babies got it?",
+  "SQL": "SELECT name, SUM(number) AS n FROM `bigquery-public-data.usa_names.usa_1910_current` WHERE gender = 'M' AND year = 1990 GROUP BY name ORDER BY n DESC LIMIT 1"
+ },
+ {
+  "question_id": "px-07",
+  "db_id": "public",
+  "difficulty": "simple",
+  "question": "How many Stack Overflow users have a reputation above 100000?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.stackoverflow.users` WHERE reputation > 100000"
+ },
+ {
+  "question_id": "px-08",
+  "db_id": "public",
+  "difficulty": "simple",
+  "question": "How many 'Famous Question' badges have been awarded on Stack Overflow?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.stackoverflow.badges` WHERE name = 'Famous Question'"
+ },
+ {
+  "question_id": "px-09",
+  "db_id": "public",
+  "difficulty": "simple",
+  "question": "How many weather stations in the NOAA GSOD station list are in country US?",
+  "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.noaa_gsod.stations` WHERE country = 'US'"
+ },
+ {
+  "question_id": "px-10",
+  "db_id": "public",
+  "difficulty": "moderate",
+  "question": "Which San Francisco bike share region has the most stations, and how many stations does it have?",
+  "SQL": "SELECT r.name, COUNT(*) AS n FROM `bigquery-public-data.san_francisco_bikeshare.bikeshare_station_info` AS s JOIN `bigquery-public-data.san_francisco_bikeshare.bikeshare_regions` AS r ON s.region_id = r.region_id GROUP BY r.name ORDER BY n DESC LIMIT 1"
+ }
+]

@@ -1,0 +1,29 @@
+# Author: spicyzhug@gmail.com
+# Copyright: lituus-io, all rights reserved
+
+[package]
+name = "crab-meta"
+description = "crab-r metadata image: a compact, zero-copy image of table and column metadata (descriptions with provenance, producing SQL, expressions) and column lineage in both directions, with hashed lookups and allocation-free upstream/downstream walks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+graph-r = { workspace = true }
+objstore-r = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+
+[[bench]]
+name = "meta"
+harness = false
+
+[[bin]]
+name = "crab-meta"
+path = "src/bin/crab-meta.rs"

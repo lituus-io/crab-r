@@ -1,0 +1,22 @@
+[
+  {"question_id": "px-01", "db_id": "public", "difficulty": "simple", "question": "How many bike share stations are there in Austin?",
+   "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.austin_bikeshare.bikeshare_stations`"},
+  {"question_id": "px-02", "db_id": "public", "difficulty": "simple", "question": "What is the average duration in minutes of Austin bike share trips?",
+   "SQL": "SELECT AVG(duration_minutes) FROM `bigquery-public-data.austin_bikeshare.bikeshare_trips`"},
+  {"question_id": "px-03", "db_id": "public", "difficulty": "simple", "question": "What is the total dock capacity of all San Francisco bike share stations?",
+   "SQL": "SELECT SUM(capacity) FROM `bigquery-public-data.san_francisco_bikeshare.bikeshare_station_info`"},
+  {"question_id": "px-04", "db_id": "public", "difficulty": "simple", "question": "How many New York Citi Bike stations have a capacity of more than 50 docks?",
+   "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.new_york_citibike.citibike_stations` WHERE capacity > 50"},
+  {"question_id": "px-05", "db_id": "public", "difficulty": "simple", "question": "How many babies named Emma were born in Texas in 2010?",
+   "SQL": "SELECT SUM(number) FROM `bigquery-public-data.usa_names.usa_1910_current` WHERE name = 'Emma' AND state = 'TX' AND year = 2010"},
+  {"question_id": "px-06", "db_id": "public", "difficulty": "moderate", "question": "What was the most common male baby name in the US in 1990, and how many babies got it?",
+   "SQL": "SELECT name, SUM(number) AS n FROM `bigquery-public-data.usa_names.usa_1910_current` WHERE gender = 'M' AND year = 1990 GROUP BY name ORDER BY n DESC LIMIT 1"},
+  {"question_id": "px-07", "db_id": "public", "difficulty": "simple", "question": "How many Stack Overflow users have a reputation above 100000?",
+   "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.stackoverflow.users` WHERE reputation > 100000"},
+  {"question_id": "px-08", "db_id": "public", "difficulty": "simple", "question": "How many 'Famous Question' badges have been awarded on Stack Overflow?",
+   "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.stackoverflow.badges` WHERE name = 'Famous Question'"},
+  {"question_id": "px-09", "db_id": "public", "difficulty": "simple", "question": "How many weather stations in the NOAA GSOD station list are in country US?",
+   "SQL": "SELECT COUNT(*) FROM `bigquery-public-data.noaa_gsod.stations` WHERE country = 'US'"},
+  {"question_id": "px-10", "db_id": "public", "difficulty": "moderate", "question": "Which San Francisco bike share region has the most stations, and how many stations does it have?",
+   "SQL": "SELECT r.name, COUNT(*) AS n FROM `bigquery-public-data.san_francisco_bikeshare.bikeshare_station_info` AS s JOIN `bigquery-public-data.san_francisco_bikeshare.bikeshare_regions` AS r ON s.region_id = r.region_id GROUP BY r.name ORDER BY n DESC LIMIT 1"}
+]

@@ -1,0 +1,113 @@
+# Author: spicyzhug@gmail.com
+# Copyright: lituus-io, all rights reserved
+
+[package]
+name = "crab-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+crab-core = { path = "../crates/crab-core" }
+crab-llm = { path = "../crates/crab-llm" }
+crab-sql = { path = "../crates/crab-sql" }
+crab-catalog = { path = "../crates/crab-catalog" }
+crab-ir = { path = "../crates/crab-ir" }
+crab-values = { path = "../crates/crab-values" }
+crab-grammar = { path = "../crates/crab-grammar" }
+crab-describe = { path = "../crates/crab-describe" }
+crab-meta = { path = "../crates/crab-meta" }
+crab-lineage = { path = "../crates/crab-lineage", features = ["dataplex"] }
+graph-r = { path = "../../../code_backup/graph-r" }
+objstore-r = { path = "../../../code_backup/objstore-r" }
+
+[[bin]]
+name = "fuzz_json"
+path = "fuzz_targets/fuzz_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_date"
+path = "fuzz_targets/fuzz_date.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_sse"
+path = "fuzz_targets/fuzz_sse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_cassette"
+path = "fuzz_targets/fuzz_cassette.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_sql"
+path = "fuzz_targets/fuzz_sql.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_catalog"
+path = "fuzz_targets/fuzz_catalog.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ground"
+path = "fuzz_targets/fuzz_ground.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_grammar"
+path = "fuzz_targets/fuzz_grammar.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_lineage"
+path = "fuzz_targets/fuzz_lineage.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_splice"
+path = "fuzz_targets/fuzz_splice.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_bind"
+path = "fuzz_targets/fuzz_bind.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_meta"
+path = "fuzz_targets/fuzz_meta.rs"
+test = false
+doc = false
+bench = false

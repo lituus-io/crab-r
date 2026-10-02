@@ -1,0 +1,11 @@
+# Author: spicyzhug@gmail.com
+# Copyright: lituus-io, all rights reserved
+#
+# Pinned to the same dated nightly as graph-r, link-r and objstore-r so the
+# four build together with one compiler (GAT + TAIT futures need
+# `impl_trait_in_assoc_type`). Bumping the pin is a deliberate commit made in
+# all four repos together.
+
+[toolchain]
+channel = "nightly-2026-06-10"
+components = ["rustfmt", "clippy"]
