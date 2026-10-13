@@ -1,4 +1,4 @@
-// Author: spicyzhug@gmail.com
+// Author: support@lituus.io
 // Copyright: lituus-io, all rights reserved
 //
 // Grammar ⊆ parser, at depth: the input picks a seed, nesting depth and
@@ -8,8 +8,8 @@
 
 #![no_main]
 
-use crab_grammar::{Grammar, Table};
-use crab_sql::{Mode, Parser};
+use crab_r::grammar::{Grammar, Table};
+use crab_r::sql::{Mode, Parser};
 use libfuzzer_sys::fuzz_target;
 use std::sync::OnceLock;
 
@@ -24,7 +24,7 @@ fn grammar() -> &'static Grammar {
             },
             Table { fqn: "p.shop.users", alias: "u", columns: vec!["id", "addr.city"] },
         ];
-        Grammar::sql(&tables, crab_ir::funcs::NAMES)
+        Grammar::sql(&tables, crab_r::ir::funcs::NAMES)
     })
 }
 

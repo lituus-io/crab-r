@@ -124,121 +124,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "crab-catalog"
-version = "0.1.0"
-dependencies = [
- "crab-core",
- "crab-exec",
- "graph-r",
- "link-r",
- "objstore-r",
-]
-
-[[package]]
-name = "crab-core"
-version = "0.1.0"
-dependencies = [
- "graph-r",
-]
-
-[[package]]
-name = "crab-describe"
-version = "0.1.0"
-dependencies = [
- "crab-catalog",
- "crab-core",
- "crab-exec",
- "crab-ir",
- "crab-lineage",
- "crab-llm",
- "crab-meta",
- "crab-sql",
- "graph-r",
- "objstore-r",
-]
-
-[[package]]
-name = "crab-exec"
-version = "0.1.0"
-dependencies = [
- "crab-core",
- "graph-r",
- "objstore-r",
-]
-
-[[package]]
 name = "crab-fuzz"
 version = "0.0.0"
 dependencies = [
- "crab-catalog",
- "crab-core",
- "crab-describe",
- "crab-grammar",
- "crab-ir",
- "crab-lineage",
- "crab-llm",
- "crab-meta",
- "crab-sql",
- "crab-values",
- "graph-r",
  "libfuzzer-sys",
- "objstore-r",
-]
-
-[[package]]
-name = "crab-grammar"
-version = "0.1.0"
-dependencies = [
- "crab-core",
-]
-
-[[package]]
-name = "crab-ir"
-version = "0.1.0"
-dependencies = [
- "crab-catalog",
- "crab-core",
- "crab-sql",
- "graph-r",
-]
-
-[[package]]
-name = "crab-lineage"
-version = "0.1.0"
-dependencies = [
- "crab-core",
- "objstore-r",
-]
-
-[[package]]
-name = "crab-llm"
-version = "0.1.0"
-dependencies = [
- "crab-core",
- "graph-r",
- "objstore-r",
-]
-
-[[package]]
-name = "crab-meta"
-version = "0.1.0"
-dependencies = [
- "graph-r",
- "objstore-r",
-]
-
-[[package]]
-name = "crab-sql"
-version = "0.1.0"
-dependencies = [
- "crab-core",
-]
-
-[[package]]
-name = "crab-values"
-version = "0.1.0"
-dependencies = [
- "crab-catalog",
+ "uu-crab-r",
+ "uu-graph-r",
+ "uu-objstore-r",
 ]
 
 [[package]]
@@ -392,19 +284,6 @@ dependencies = [
  "r-efi",
  "rand_core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "graph-r"
-version = "0.3.0"
-dependencies = [
- "bytes",
- "compact_str",
- "libc",
- "memmap2",
- "smallvec",
- "thiserror 1.0.69",
- "xxhash-rust",
 ]
 
 [[package]]
@@ -696,23 +575,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "link-r"
-version = "0.3.0"
-dependencies = [
- "bytes",
- "compact_str",
- "futures",
- "memmap2",
- "roaring",
- "secrecy",
- "smallvec",
- "thiserror 1.0.69",
- "url",
- "xxhash-rust",
- "zstd",
-]
-
-[[package]]
 name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -754,18 +616,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "objstore-r"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
 ]
 
 [[package]]
@@ -1370,6 +1220,56 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
+name = "uu-crab-r"
+version = "0.2.0"
+dependencies = [
+ "uu-graph-r",
+ "uu-link-r",
+ "uu-objstore-r",
+]
+
+[[package]]
+name = "uu-graph-r"
+version = "0.4.0"
+dependencies = [
+ "bytes",
+ "compact_str",
+ "memmap2",
+ "smallvec",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "uu-link-r"
+version = "0.4.0"
+dependencies = [
+ "bytes",
+ "compact_str",
+ "futures",
+ "roaring",
+ "secrecy",
+ "smallvec",
+ "thiserror 1.0.69",
+ "url",
+ "uu-graph-r",
+ "uu-objstore-r",
+ "zstd",
+]
+
+[[package]]
+name = "uu-objstore-r"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uu-graph-r",
+]
+
+[[package]]
 name = "want"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1678,9 +1578,9 @@ dependencies = [
 
 [[package]]
 name = "zstd-sys"
-version = "2.1.0+zstd.1.5.7"
+version = "2.1.1+zstd.1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0"
+checksum = "aeec9eaf2dffbbd09201e23bd0ffcbaa33bb8e9266a10734fd7ed90a85eca078"
 dependencies = [
  "cc",
  "pkg-config",

@@ -1,0 +1,107 @@
+# crab-r
+
+Generative technical metadata for BigQuery. Name a **project**, a **dataset**,
+a **table**, or hand over **SQL**: crab-r reads the catalog, the queries that
+produce each table (job history, view definitions, or your SQL), Dataplex
+lineage and the values themselves, and writes column and table descriptions
+that are checked against the data before they are trusted.
+
+- **Evidence first.** Every producing statement is parsed, bound and traced to
+  column lineage: pass-throughs and renames inherit their source's description
+  verbatim (no model call), filters and joins are recorded as row conditions,
+  and only what is genuinely new is drafted.
+- **Validated, not guessed.** Each draft comes with the model's own checks
+  (aggregates and queries), run as one guarded scan; a judge keeps, revises or
+  flags each description on the results. Planted or stale descriptions are
+  flagged with a correction.
+- **Incremental.** With `--store`, state lives in a graph-r store. A table
+  whose shape, rows, producing SQL and upstream descriptions are unchanged is
+  carried over with no profile, model call or check: an unchanged rerun costs
+  $0 in model spend.
+- **Shareable.** `--publish gs://bucket/prefix` ships the store (only what
+  changed, single fenced writer); `crab-describe pull` keeps replicas current.
+  Lookups read a store locally.
+
+## Command
+
+```text
+crab-describe my-project                          # every dataset of a project (one region)
+crab-describe my-project.mart my-project.stg      # datasets
+crab-describe my-project.mart.orders --upstream 1 # a table, and what it reads one level up
+crab-describe --sql query.sql --default-dataset my-project.mart
+                                                  # a query's result, as a virtual table
+crab-describe --sql ctas.sql --target my-project.mart.orders
+                                                  # a table as this SQL fills it
+
+    [--region US] [--billing-project P] [--jobs-project P] [--lineage-location us]
+    [--store DIR] [--publish gs://bucket/prefix] [--budget-usd 5] [--out report.json]
+    [--emit-schema DIR] [--apply [--correct]]
+
+crab-describe lookup     DIR my-project.mart.orders.status
+crab-describe upstream   DIR my-project.mart.orders.status [DEPTH]
+crab-describe downstream DIR my-project.mart.orders.status [DEPTH]
+crab-describe table      DIR my-project.mart.orders
+crab-describe due        DIR [N]
+crab-describe pull       gs://bucket/prefix DIR
+```
+
+Credentials come from Application Default Credentials. Nothing is written to
+the warehouse unless `--apply` is given; then only empty descriptions are
+filled (flagged ones too with `--correct`), each table guarded by the ETag it
+was read at.
+
+## Python
+
+`pip install uu-crab-r` → `import crab_r`. The same options as keyword
+arguments; see [`bindings/python`](bindings/python/README.md).
+
+```python
+import crab_r
+report = crab_r.describe("my-project.mart.orders", upstream=1, store="state")
+print(crab_r.lookup("state", "my-project.mart.orders.status"))
+```
+
+## Layout
+
+One crate, `uu-crab-r` (`use crab_r::...`), on crates.io and docs.rs.
+
+
+| Module | Role |
+|---|---|
+| `sql` | GoogleSQL lexer, parser and emitter |
+| `ir` | Binder, diagnostics, column lineage and row conditions |
+| `catalog` | Zero-copy catalog image, INFORMATION_SCHEMA sync, value profiles |
+| `exec` | Warehouse trait; BigQuery client with dry-run cost guards |
+| `lineage` | Column lineage graph; Dataplex lineage client |
+| `llm` | Model trait; Vertex AI (Gemini), OpenAI-compatible, replay |
+| `describe` | Describe: discovery, tracing, drafting, checks, judging, state |
+| `engine`, `prompt`, `link`, `values`, `grammar`, `verify`, `eval` | Text-to-SQL (schema linking on link-r, value grounding, constrained generation, result verification, evaluation) |
+| `base` | Keys, typed arenas, JSON scanner and writer, batches, dates, budgets |
+
+crab-r builds on three sibling libraries, each with one job:
+[graph-r](https://github.com/lituus-io/graph-r) (storage, graph, shared core),
+[link-r](https://github.com/lituus-io/link-r) (acquisition and retrieval) and
+[objstore-r](https://github.com/lituus-io/objstore-r) (object stores, HTTPS,
+auth). They are path dependencies: check them out beside crab-r at the refs
+in [`.github/siblings`](.github/siblings), or run `scripts/fetch-siblings.sh`.
+No other third-party crate is a dependency (`scripts/check_deps.py`).
+
+## Development
+
+```text
+scripts/fetch-siblings.sh
+cargo test --all-features
+cargo clippy --all-features --all-targets
+python3 scripts/check_deps.py
+```
+
+Live tests are environment-gated and skip unless configured, for example
+`CRAB_BQ_PROJECT`, `CRAB_LINEAGE_PROJECT`, `CRAB_VERTEX_PROJECT`, and
+`OBJSTORE_LIVE_BUCKET` for the sibling libraries' Cloud Storage suites.
+`crates/crab-describe/tests/live/` holds a mock warehouse
+(`run_sql.py crab_mock.sql PROJECT DATASET`) with two planted wrong
+descriptions for Describe to flag.
+
+## License
+
+AGPL-3.0-or-later, or a commercial license from lituus-io.

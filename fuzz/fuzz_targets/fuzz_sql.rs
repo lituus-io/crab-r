@@ -1,4 +1,4 @@
-// Author: spicyzhug@gmail.com
+// Author: support@lituus.io
 // Copyright: lituus-io, all rights reserved
 //
 // The GoogleSQL front end on arbitrary input:
@@ -14,11 +14,11 @@
 
 /// A resource limit of the parser, not a syntax error.
 fn limit(msg: &str) -> bool {
-    msg == crab_sql::parser::TOO_DEEP || msg == crab_sql::parser::TOO_COMPLEX
+    msg == crab_r::sql::parser::TOO_DEEP || msg == crab_r::sql::parser::TOO_COMPLEX
 }
 
-use crab_sql::emit::to_sql;
-use crab_sql::{viability, Mode, Parser, Viability};
+use crab_r::sql::emit::to_sql;
+use crab_r::sql::{viability, Mode, Parser, Viability};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

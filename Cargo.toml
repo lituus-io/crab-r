@@ -1,51 +1,103 @@
-# Author: spicyzhug@gmail.com
+# Author: support@lituus.io
 # Copyright: lituus-io, all rights reserved
 
-# Dependency policy: the only third-party crates any member may name under
-# [dependencies] are graph-r, link-r and objstore-r (plus other crab-r crates).
-# Dev tooling (proptest, criterion, libfuzzer-sys) is allowed in
-# [dev-dependencies] and the fuzz crate only. Enforced by scripts/check_deps.py.
+# Dependency policy: the only third-party crates [dependencies] may name are
+# graph-r, link-r and objstore-r. Dev tooling (proptest, criterion, tokio,
+# libfuzzer-sys) is allowed in [dev-dependencies] and the fuzz crate only.
+# Enforced by scripts/check_deps.py.
 
-[workspace]
-resolver = "2"
-members = ["crates/crab-core", "crates/crab-sql", "crates/crab-exec", "crates/crab-catalog", "crates/crab-ir", "crates/crab-verify", "crates/crab-values", "crates/crab-grammar", "crates/crab-link", "crates/crab-lineage", "crates/crab-meta", "crates/crab-describe", "crates/crab-prompt", "crates/crab-engine", "crates/crab-llm", "crates/crab-eval"]
-# The fuzz crate needs cargo-fuzz and is checked separately:
-#   cargo check --manifest-path fuzz/Cargo.toml --all-targets
-exclude = ["fuzz"]
-
-[workspace.package]
-version = "0.1.0"
+[package]
+name = "uu-crab-r"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"
+description = "Generative technical metadata for BigQuery: describe a project, dataset, table or SQL from its producing queries, lineage and values, each description checked against the data"
 repository = "https://github.com/lituus-io/crab-r"
-authors = ["lituus-io <spicyzhug@gmail.com>"]
-publish = false
+homepage = "https://github.com/lituus-io/crab-r"
+documentation = "https://docs.rs/uu-crab-r"
+readme = "README.md"
+authors = ["lituus-io <support@lituus.io>"]
+keywords = ["bigquery", "metadata", "lineage", "sql", "data-catalog"]
+categories = ["database", "development-tools", "parser-implementations"]
+exclude = ["/evals", "/fuzz", "/tests/live", "/bindings", "/.github", "/scripts", "/target-fuzz"]
 
-[workspace.dependencies]
-graph-r = { path = "../../code_backup/graph-r", default-features = false }
-objstore-r = { path = "../../code_backup/objstore-r", default-features = false }
-crab-core = { path = "crates/crab-core" }
-crab-llm = { path = "crates/crab-llm" }
-crab-sql = { path = "crates/crab-sql" }
-crab-exec = { path = "crates/crab-exec" }
-crab-catalog = { path = "crates/crab-catalog" }
-crab-ir = { path = "crates/crab-ir" }
-crab-verify = { path = "crates/crab-verify" }
-crab-values = { path = "crates/crab-values" }
-crab-grammar = { path = "crates/crab-grammar" }
-crab-link = { path = "crates/crab-link" }
-crab-lineage = { path = "crates/crab-lineage" }
-crab-meta = { path = "crates/crab-meta" }
-crab-describe = { path = "crates/crab-describe" }
-crab-prompt = { path = "crates/crab-prompt" }
-crab-engine = { path = "crates/crab-engine" }
-link-r = { path = "../../code_backup/link-r", default-features = false }
-criterion = { version = "0.5", default-features = false }
-# Dev only: reqwest (inside objstore-r's `http`) needs a tokio reactor, so
-# integration tests that make real calls run on tokio. Never a [dependency].
-tokio = { version = "1.40", default-features = false, features = ["rt", "macros", "time"] }
+[lib]
+name = "crab_r"
+
+[[bin]]
+name = "crab-describe"
+path = "src/bin/crab-describe.rs"
+required-features = ["cli"]
+
+[features]
+default = []
+# The authorised HTTPS transport (objstore-r) for BigQuery.
+http = ["objstore-r/http"]
+# Gemini on Vertex AI.
+vertex = ["objstore-r/http"]
+# OpenAI-compatible chat completions.
+openai = ["objstore-r/http"]
+# Dataplex lineage (Data Lineage API).
+dataplex = ["objstore-r/http"]
+# The `crab-describe` command and `describe::app`: BigQuery, Vertex AI and
+# Dataplex over ADC, a blocking runtime, and store publishing to Cloud
+# Storage through objstore-r's graph-r mirror.
+cli = ["http", "vertex", "dataplex", "objstore-r/blocking", "objstore-r/gcs", "objstore-r/mirror"]
+
+[package.metadata.docs.rs]
+features = ["cli", "openai"]
+
+[dependencies]
+graph-r = { package = "uu-graph-r", path = "../graph-r", version = "0.4.0", default-features = false, features = ["store"] }
+link-r = { package = "uu-link-r", path = "../link-r", version = "0.4.0", default-features = false }
+objstore-r = { package = "uu-objstore-r", path = "../objstore-r", version = "0.2.0" }
+
+[dev-dependencies]
 proptest = "1.5"
+criterion = { version = "0.5", default-features = false }
+# Live tests only: reqwest (inside objstore-r's `http`) needs a tokio reactor.
+tokio = { version = "1.40", default-features = false, features = ["rt", "macros", "time"] }
+
+[[test]]
+name = "baseline_live"
+required-features = ["vertex", "openai", "http"]
+
+[[test]]
+name = "sync_live"
+required-features = ["http"]
+
+[[bench]]
+name = "bind_bench"
+harness = false
+
+[[bench]]
+name = "catalog_bench"
+harness = false
+
+[[bench]]
+name = "grammar_bench"
+harness = false
+
+[[bench]]
+name = "ground_bench"
+harness = false
+
+[[bench]]
+name = "hash_bench"
+harness = false
+
+[[bench]]
+name = "link_bench"
+harness = false
+
+[[bench]]
+name = "parse_bench"
+harness = false
+
+[[bench]]
+name = "trace_bench"
+harness = false
 
 [profile.release]
 opt-level = 3

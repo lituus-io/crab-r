@@ -1,4 +1,4 @@
-// Author: spicyzhug@gmail.com
+// Author: support@lituus.io
 // Copyright: lituus-io, all rights reserved
 //
 // Arbitrary bytes must produce events or a typed error — never a panic, a
@@ -6,7 +6,7 @@
 
 #![no_main]
 
-use crab_core::json::{Event, Scanner};
+use crab_r::base::json::{Event, Scanner};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

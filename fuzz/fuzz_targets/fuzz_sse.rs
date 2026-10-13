@@ -1,4 +1,4 @@
-// Author: spicyzhug@gmail.com
+// Author: support@lituus.io
 // Copyright: lituus-io, all rights reserved
 //
 // Arbitrary bytes, split at arbitrary points, must decode to events or a
@@ -7,8 +7,8 @@
 
 #![no_main]
 
-use crab_llm::sse::SseDecoder;
 use libfuzzer_sys::fuzz_target;
+use objstore_r::sse::SseDecoder;
 
 fn events(chunks: &mut dyn Iterator<Item = &[u8]>) -> Option<Vec<String>> {
     let mut d = SseDecoder::new();

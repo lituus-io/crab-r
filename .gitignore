@@ -3,3 +3,9 @@
 /fuzz/artifacts
 /fuzz/corpus
 /fuzz/coverage
+/bindings/python/target
+/bindings/python/dist
+__pycache__/
+*.so
+.venv/
+/target-fuzz

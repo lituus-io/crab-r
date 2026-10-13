@@ -1,4 +1,4 @@
-// Author: spicyzhug@gmail.com
+// Author: support@lituus.io
 // Copyright: lituus-io, all rights reserved
 //
 // Cassette files are read from disk or object storage: arbitrary input must
@@ -6,7 +6,7 @@
 
 #![no_main]
 
-use crab_llm::replay::Cassette;
+use crab_r::llm::replay::Cassette;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

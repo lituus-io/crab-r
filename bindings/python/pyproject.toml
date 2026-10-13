@@ -1,0 +1,33 @@
+# Author: support@lituus.io
+# Copyright: lituus-io, all rights reserved
+
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+# The distribution is `uu-crab-r`, matching its siblings `uu-graph-r` and
+# `uu-link-r`; the module it ships is `crab_r`.
+name = "uu-crab-r"
+version = "0.2.0"
+description = "Generative technical metadata for BigQuery: describe a project, dataset, table or SQL from its producing queries, lineage and values, validated by its own checks."
+requires-python = ">=3.12"
+readme = "README.md"
+license = "AGPL-3.0-or-later OR LicenseRef-Proprietary"
+authors = [{ name = "lituus-io", email = "support@lituus.io" }]
+keywords = ["bigquery", "metadata", "lineage", "data-catalog", "sql"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Database",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.maturin]
+module-name = "crab_r"
+include = ["crab_r.pyi"]

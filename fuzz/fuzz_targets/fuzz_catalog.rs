@@ -1,4 +1,4 @@
-// Author: spicyzhug@gmail.com
+// Author: support@lituus.io
 // Copyright: lituus-io, all rights reserved
 //
 // Catalog images arrive from disk and object storage. With the trailer
@@ -8,7 +8,7 @@
 
 #![no_main]
 
-use crab_catalog::{Catalog, ColId, TableId};
+use crab_r::catalog::{Catalog, ColId, TableId};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -35,7 +35,7 @@ fuzz_target!(|data: &[u8]| {
         }
     }
     // The value index is built from whatever profiles the image carries.
-    let idx = crab_values::ValueIndex::build(&c);
+    let idx = crab_r::values::ValueIndex::build(&c);
     let _ = idx.ground("How many Shipped orders in Sao Paulo?", 8);
     let _ = c.table(TableId(u32::MAX));
     let _ = c.column(ColId(u32::MAX));

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# Author: spicyzhug@gmail.com
+# Author: support@lituus.io
 # Copyright: lituus-io, all rights reserved
 """Enforce the crab-r dependency policy.
 
-Every workspace member may name only graph-r, link-r, objstore-r and other
-crab-* crates under [dependencies] / [build-dependencies] (including
-target-specific tables). Dev tooling is allowed only under [dev-dependencies]
-and in the separate fuzz crate. Exits non-zero listing every violation.
+The crate may name only graph-r, link-r and objstore-r under [dependencies] /
+[build-dependencies] (including target-specific tables). Dev tooling is
+allowed only under [dev-dependencies] and in the separate fuzz crate. Exits
+non-zero listing every violation.
 """
 
 import pathlib
@@ -32,24 +32,17 @@ def dep_tables(manifest):
 
 
 def allowed(table, dep):
-    if dep.startswith("crab-"):
-        return True
     return dep in (DEV_ALLOWED if table.endswith("dev-dependencies") else ALLOWED)
 
 
 def main():
-    root = tomllib.loads((ROOT / "Cargo.toml").read_text())
+    path = ROOT / "Cargo.toml"
+    manifest = tomllib.loads(path.read_text())
     violations = []
-    for dep in root.get("workspace", {}).get("dependencies", {}):
-        if not (dep.startswith("crab-") or dep in DEV_ALLOWED):
-            violations.append(f"Cargo.toml [workspace.dependencies]: {dep}")
-    for member in root["workspace"]["members"]:
-        path = ROOT / member / "Cargo.toml"
-        manifest = tomllib.loads(path.read_text())
-        for table, deps in dep_tables(manifest):
-            for dep in deps:
-                if not allowed(table, dep):
-                    violations.append(f"{path.relative_to(ROOT)} [{table}]: {dep}")
+    for table, deps in dep_tables(manifest):
+        for dep in deps:
+            if not allowed(table, dep):
+                violations.append(f"Cargo.toml [{table}]: {dep}")
     if violations:
         print("dependency policy violations:", *violations, sep="\n  ")
         return 1

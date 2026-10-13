@@ -1,4 +1,4 @@
-// Author: spicyzhug@gmail.com
+// Author: support@lituus.io
 // Copyright: lituus-io, all rights reserved
 //
 // The binder on arbitrary SQL, against a small catalog with nested and
@@ -9,11 +9,11 @@
 
 #![no_main]
 
-use crab_catalog::{Catalog, CatalogBuilder, ColumnSpec, TableKind, TableSpec};
-use crab_ir::canon::to_canonical_sql;
-use crab_ir::fingerprint::fingerprint;
-use crab_ir::{BindOpts, Binder};
-use crab_sql::{Mode, Parser};
+use crab_r::catalog::{Catalog, CatalogBuilder, ColumnSpec, TableKind, TableSpec};
+use crab_r::ir::canon::to_canonical_sql;
+use crab_r::ir::fingerprint::fingerprint;
+use crab_r::ir::{BindOpts, Binder};
+use crab_r::sql::{Mode, Parser};
 use libfuzzer_sys::fuzz_target;
 use std::sync::OnceLock;
 
@@ -80,7 +80,7 @@ fuzz_target!(|data: &[u8]| {
             let _ = d.message(src);
         }
         // Lineage never panics, and names exactly the statement's outputs.
-        let lin = crab_ir::lineage(&parsed, bound, cat);
+        let lin = crab_r::ir::lineage(&parsed, bound, cat);
         assert_eq!(lin.len() as u32, bound.output.1 - bound.output.0);
     }
     let bound = b.bind(

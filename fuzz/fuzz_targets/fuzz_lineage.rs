@@ -1,4 +1,4 @@
-// Author: spicyzhug@gmail.com
+// Author: support@lituus.io
 // Copyright: lituus-io, all rights reserved
 //
 // Lineage responses come from a Preview API: any bytes must decode to a
@@ -7,7 +7,7 @@
 
 #![no_main]
 
-use crab_lineage::{dataplex, Column};
+use crab_r::lineage::{dataplex, Column};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

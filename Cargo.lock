@@ -218,188 +218,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crab-catalog"
-version = "0.1.0"
-dependencies = [
- "crab-core",
- "crab-exec",
- "criterion",
- "graph-r",
- "link-r",
- "objstore-r",
- "proptest",
- "tokio",
-]
-
-[[package]]
-name = "crab-core"
-version = "0.1.0"
-dependencies = [
- "graph-r",
- "proptest",
-]
-
-[[package]]
-name = "crab-describe"
-version = "0.1.0"
-dependencies = [
- "crab-catalog",
- "crab-core",
- "crab-exec",
- "crab-ir",
- "crab-lineage",
- "crab-llm",
- "crab-meta",
- "crab-sql",
- "criterion",
- "graph-r",
- "objstore-r",
- "proptest",
-]
-
-[[package]]
-name = "crab-engine"
-version = "0.1.0"
-dependencies = [
- "crab-catalog",
- "crab-core",
- "crab-exec",
- "crab-grammar",
- "crab-ir",
- "crab-link",
- "crab-llm",
- "crab-prompt",
- "crab-sql",
- "crab-values",
- "crab-verify",
- "graph-r",
- "objstore-r",
-]
-
-[[package]]
-name = "crab-eval"
-version = "0.1.0"
-dependencies = [
- "crab-catalog",
- "crab-core",
- "crab-engine",
- "crab-exec",
- "crab-llm",
- "crab-verify",
- "objstore-r",
- "proptest",
- "tokio",
-]
-
-[[package]]
-name = "crab-exec"
-version = "0.1.0"
-dependencies = [
- "crab-core",
- "graph-r",
- "objstore-r",
- "tokio",
-]
-
-[[package]]
-name = "crab-grammar"
-version = "0.1.0"
-dependencies = [
- "crab-core",
- "crab-ir",
- "crab-sql",
- "criterion",
-]
-
-[[package]]
-name = "crab-ir"
-version = "0.1.0"
-dependencies = [
- "crab-catalog",
- "crab-core",
- "crab-sql",
- "criterion",
- "graph-r",
- "objstore-r",
-]
-
-[[package]]
-name = "crab-lineage"
-version = "0.1.0"
-dependencies = [
- "crab-core",
- "objstore-r",
- "tokio",
-]
-
-[[package]]
-name = "crab-link"
-version = "0.1.0"
-dependencies = [
- "crab-catalog",
- "crab-values",
- "criterion",
- "objstore-r",
-]
-
-[[package]]
-name = "crab-llm"
-version = "0.1.0"
-dependencies = [
- "crab-core",
- "graph-r",
- "objstore-r",
- "tokio",
-]
-
-[[package]]
-name = "crab-meta"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "graph-r",
- "objstore-r",
- "proptest",
-]
-
-[[package]]
-name = "crab-prompt"
-version = "0.1.0"
-dependencies = [
- "crab-catalog",
- "crab-core",
- "crab-sql",
- "objstore-r",
-]
-
-[[package]]
-name = "crab-sql"
-version = "0.1.0"
-dependencies = [
- "crab-core",
- "criterion",
- "proptest",
-]
-
-[[package]]
-name = "crab-values"
-version = "0.1.0"
-dependencies = [
- "crab-catalog",
- "criterion",
- "objstore-r",
-]
-
-[[package]]
-name = "crab-verify"
-version = "0.1.0"
-dependencies = [
- "crab-core",
- "criterion",
- "proptest",
-]
-
-[[package]]
 name = "criterion"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -624,19 +442,6 @@ dependencies = [
  "r-efi 6.0.0",
  "rand_core 0.10.1",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "graph-r"
-version = "0.3.0"
-dependencies = [
- "bytes",
- "compact_str",
- "libc",
- "memmap2",
- "smallvec",
- "thiserror 1.0.69",
- "xxhash-rust",
 ]
 
 [[package]]
@@ -955,23 +760,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
-name = "link-r"
-version = "0.3.0"
-dependencies = [
- "bytes",
- "compact_str",
- "futures",
- "memmap2",
- "roaring",
- "secrecy",
- "smallvec",
- "thiserror 1.0.69",
- "url",
- "xxhash-rust",
- "zstd",
-]
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1028,18 +816,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "objstore-r"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
 ]
 
 [[package]]
@@ -1832,6 +1608,60 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
+name = "uu-crab-r"
+version = "0.2.0"
+dependencies = [
+ "criterion",
+ "proptest",
+ "tokio",
+ "uu-graph-r",
+ "uu-link-r",
+ "uu-objstore-r",
+]
+
+[[package]]
+name = "uu-graph-r"
+version = "0.4.0"
+dependencies = [
+ "bytes",
+ "compact_str",
+ "memmap2",
+ "smallvec",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "uu-link-r"
+version = "0.4.0"
+dependencies = [
+ "bytes",
+ "compact_str",
+ "futures",
+ "roaring",
+ "secrecy",
+ "smallvec",
+ "thiserror 1.0.69",
+ "url",
+ "uu-graph-r",
+ "uu-objstore-r",
+ "zstd",
+]
+
+[[package]]
+name = "uu-objstore-r"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uu-graph-r",
+]
+
+[[package]]
 name = "wait-timeout"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2203,9 +2033,9 @@ dependencies = [
 
 [[package]]
 name = "zstd-sys"
-version = "2.1.0+zstd.1.5.7"
+version = "2.1.1+zstd.1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0"
+checksum = "aeec9eaf2dffbbd09201e23bd0ffcbaa33bb8e9266a10734fd7ed90a85eca078"
 dependencies = [
  "cc",
  "pkg-config",

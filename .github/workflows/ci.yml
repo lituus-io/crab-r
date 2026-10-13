@@ -1,0 +1,129 @@
+# Author: support@lituus.io
+# Copyright: lituus-io, all rights reserved
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-D warnings"
+  CARGO_TERM_COLOR: always
+
+# The toolchain comes from rust-toolchain.toml (`rustup show`), never from an
+# action that would override the pin. crab-r path-depends on graph-r, link-r
+# and objstore-r beside this checkout; scripts/fetch-siblings.sh clones them
+# there at the refs .github/siblings pins.
+
+jobs:
+  fmt:
+    name: Format and dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the pinned sibling repositories
+        shell: bash
+        env:
+          SIBLING_TOKEN: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
+        run: scripts/fetch-siblings.sh
+      - run: rustup show
+      - run: cargo fmt --all --check
+      - run: python3 scripts/check_deps.py
+
+  clippy:
+    name: Clippy
+    needs: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the pinned sibling repositories
+        shell: bash
+        env:
+          SIBLING_TOKEN: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
+        run: scripts/fetch-siblings.sh
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-features --all-targets
+
+  test:
+    name: Test (${{ matrix.os }})
+    needs: fmt
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the pinned sibling repositories
+        shell: bash
+        env:
+          SIBLING_TOKEN: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
+        run: scripts/fetch-siblings.sh
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.os }}
+      # Live tests are environment-gated and skip here.
+      - run: cargo test --all-features
+
+  fuzz-build:
+    name: Fuzz targets build
+    needs: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the pinned sibling repositories
+        shell: bash
+        env:
+          SIBLING_TOKEN: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
+        run: scripts/fetch-siblings.sh
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
+
+  python:
+    name: Python package (${{ matrix.os }})
+    needs: fmt
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the pinned sibling repositories
+        shell: bash
+        env:
+          SIBLING_TOKEN: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
+        run: scripts/fetch-siblings.sh
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/python
+          key: pyo3-${{ matrix.os }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fmt and clippy the binding
+        working-directory: bindings/python
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets
+      - name: Build and test the wheel in place
+        working-directory: bindings/python
+        shell: bash
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate 2>/dev/null || . .venv/Scripts/activate
+          pip install maturin pytest
+          maturin develop --release
+          pytest tests/ -v

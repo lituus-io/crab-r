@@ -1,4 +1,4 @@
-# Author: spicyzhug@gmail.com
+# Author: support@lituus.io
 # Copyright: lituus-io, all rights reserved
 
 [package]
@@ -12,18 +12,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-crab-core = { path = "../crates/crab-core" }
-crab-llm = { path = "../crates/crab-llm" }
-crab-sql = { path = "../crates/crab-sql" }
-crab-catalog = { path = "../crates/crab-catalog" }
-crab-ir = { path = "../crates/crab-ir" }
-crab-values = { path = "../crates/crab-values" }
-crab-grammar = { path = "../crates/crab-grammar" }
-crab-describe = { path = "../crates/crab-describe" }
-crab-meta = { path = "../crates/crab-meta" }
-crab-lineage = { path = "../crates/crab-lineage", features = ["dataplex"] }
-graph-r = { path = "../../../code_backup/graph-r" }
-objstore-r = { path = "../../../code_backup/objstore-r" }
+crab-r = { package = "uu-crab-r", path = "..", features = ["dataplex"] }
+graph-r = { package = "uu-graph-r", path = "../../graph-r" }
+objstore-r = { package = "uu-objstore-r", path = "../../objstore-r" }
 
 [[bin]]
 name = "fuzz_json"
@@ -105,9 +96,3 @@ bench = false
 [workspace]
 members = ["."]
 
-[[bin]]
-name = "fuzz_meta"
-path = "fuzz_targets/fuzz_meta.rs"
-test = false
-doc = false
-bench = false

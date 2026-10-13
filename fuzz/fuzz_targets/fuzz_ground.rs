@@ -1,4 +1,4 @@
-// Author: spicyzhug@gmail.com
+// Author: support@lituus.io
 // Copyright: lituus-io, all rights reserved
 //
 // Questions and SQL literals are user and model text. Grounding and literal
@@ -7,8 +7,8 @@
 
 #![no_main]
 
-use crab_catalog::{Catalog, CatalogBuilder, ColumnSpec, ProfileSpec, TableKind, TableSpec};
-use crab_values::ValueIndex;
+use crab_r::catalog::{Catalog, CatalogBuilder, ColumnSpec, ProfileSpec, TableKind, TableSpec};
+use crab_r::values::ValueIndex;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
