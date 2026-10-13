@@ -61,6 +61,7 @@ impl Error {
 impl Error {
     /// A provider's error envelope (an HTTP error body, or an error event in
     /// a stream with `status` 0).
+    #[cfg(any(feature = "vertex", feature = "openai"))]
     pub(crate) fn api(status: u16, body: &[u8]) -> Self {
         let e = objstore_r::transport::ApiError::parse(status, body);
         Self::Api { status: e.status, message: e.message }
