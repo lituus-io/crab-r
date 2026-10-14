@@ -1,0 +1,45 @@
+# Author: support@lituus.io
+# Copyright: lituus-io, all rights reserved
+name: Security
+
+on:
+  schedule:
+    - cron: '0 9 * * 1' # Weekly, Monday 09:00 UTC
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: Advisory audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the pinned sibling repositories
+        shell: bash
+        env:
+          SIBLING_TOKEN: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
+        run: scripts/fetch-siblings.sh
+      - name: Install cargo-audit
+        run: RUSTUP_TOOLCHAIN=stable cargo install cargo-audit --locked
+      # Every lockfile ships something: the root one the crate's tests and
+      # benches, bindings/python the PyPI wheels, fuzz the fuzz targets.
+      - name: Audit every lockfile
+        shell: bash
+        run: |
+          rc=0
+          for lock in Cargo.lock bindings/python/Cargo.lock fuzz/Cargo.lock; do
+            echo "::group::$lock"
+            cargo audit -f "$lock" || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc

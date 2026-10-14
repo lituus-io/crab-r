@@ -4,6 +4,15 @@ All notable changes to crab-r are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.1
+
+- Security: every lockfile (crate, Python binding, fuzz) refreshed to
+  patched releases, among them rustls 0.23.46 (RUSTSEC-2026-0346, -0347,
+  -0348, -0349) and the earlier rustls and quinn-proto fixes
+  (RUSTSEC-2026-0285, -0338 to -0342). The PyPI wheels are built from these.
+- Builds against uu-graph-r 0.4.1, uu-objstore-r 0.2.1 and uu-link-r 0.4.1.
+- New Security workflow: a weekly advisory audit of all three lockfiles.
+
 ## 0.2.0
 
 - **One crate, `uu-crab-r`** (`use crab_r::...`), on crates.io and docs.rs;

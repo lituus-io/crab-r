@@ -9,7 +9,7 @@ build-backend = "maturin"
 # The distribution is `uu-crab-r`, matching its siblings `uu-graph-r` and
 # `uu-link-r`; the module it ships is `crab_r`.
 name = "uu-crab-r"
-version = "0.2.0"
+version = "0.2.1"
 description = "Generative technical metadata for BigQuery: describe a project, dataset, table or SQL from its producing queries, lineage and values, validated by its own checks."
 requires-python = ">=3.12"
 readme = "README.md"

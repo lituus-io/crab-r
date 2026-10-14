@@ -98,7 +98,7 @@ python3 scripts/check_deps.py
 Live tests are environment-gated and skip unless configured, for example
 `CRAB_BQ_PROJECT`, `CRAB_LINEAGE_PROJECT`, `CRAB_VERTEX_PROJECT`, and
 `OBJSTORE_LIVE_BUCKET` for the sibling libraries' Cloud Storage suites.
-`crates/crab-describe/tests/live/` holds a mock warehouse
+`tests/live/` holds a mock warehouse
 (`run_sql.py crab_mock.sql PROJECT DATASET`) with two planted wrong
 descriptions for Describe to flag.
 
