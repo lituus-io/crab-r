@@ -210,6 +210,12 @@ struct PlanNode {
 
 impl Plan {
     fn edge(&mut self, from: UrlKey, to: UrlKey, etype: EdgeType) {
+        // A node derived from itself (`SET c = f(c)`) adds no lineage, and the
+        // store keeps no edge to its own source: staged, it would commit again
+        // on every repeat of the same export.
+        if from == to {
+            return;
+        }
         let out = self.edges.entry(from).or_default();
         if !out.iter().any(|(d, _)| *d == to) {
             out.push((to, etype));
