@@ -36,6 +36,8 @@ crab-describe --sql ctas.sql --target my-project.mart.orders
     [--region US] [--billing-project P] [--jobs-project P] [--lineage-location us]
     [--store DIR] [--publish gs://bucket/prefix] [--budget-usd 5] [--out report.json]
     [--emit-schema DIR] [--apply [--correct]]
+    [--openai-url https://host/v1 --openai-model M [--openai-key-env OPENAI_API_KEY]
+     [--openai-stream] [--price-input-usd-per-mtok X --price-output-usd-per-mtok X]]
 
 crab-describe lookup     DIR my-project.mart.orders.status
 crab-describe upstream   DIR my-project.mart.orders.status [DEPTH]
@@ -49,6 +51,16 @@ Credentials come from Application Default Credentials. Nothing is written to
 the warehouse unless `--apply` is given; then only empty descriptions are
 filled (flagged ones too with `--correct`), each table guarded by the ETag it
 was read at.
+
+The model is Gemini on Vertex AI unless `--openai-url` names an
+OpenAI-compatible chat-completions server (BigQuery and Dataplex stay on
+ADC). Its API key is read from the environment variable `--openai-key-env`
+names (default `OPENAI_API_KEY`) and is never accepted on the command line.
+Requests are unary unless `--openai-stream` is given: some gateways refuse
+streamed structured output, and `n` candidates still share one request.
+`--budget-usd` is enforced from the model's price — the public list price for
+`gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-mini` and `gpt-4.1-nano`, or both
+`--price-*-usd-per-mtok` flags; with neither, the run refuses to start.
 
 ## Python
 

@@ -14,8 +14,11 @@ def describe(*targets: str, sql: str | None = None, **options: Any) -> dict[str,
 
     Options are the command's flags: `target=`, `default_dataset=`,
     `upstream=`, `region=`, `store=`, `publish=`, `budget_usd=`,
-    `lineage_location=`, `profile=False`, `apply=True`, ... Progress goes to
-    the `crab_r` logger. Raises ValueError for invalid options, CrabError
+    `lineage_location=`, `profile=False`, `apply=True`, ...; an
+    OpenAI-compatible model with `openai_url=`, `openai_model=` and
+    `openai_key_env=` (the NAME of the variable holding the key, never the
+    key), `openai_stream=True`, `price_input_usd_per_mtok=`,
+    `price_output_usd_per_mtok=`. Progress goes to the `crab_r` logger. Raises ValueError for invalid options, CrabError
     when the run fails. Returns the report.
     """
 

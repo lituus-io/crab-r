@@ -22,6 +22,11 @@ crab_r.describe("my-project.mart.orders", upstream=1, store="state")
 crab_r.describe(sql="SELECT customer_id, COUNT(*) AS orders FROM orders GROUP BY 1",
                 default_dataset="my-project.mart")
 
+# An OpenAI-compatible server instead of Vertex AI. The key is read from the
+# environment variable named here, never passed as a value.
+crab_r.describe("my-project.mart", openai_url="https://host/v1",
+                openai_model="gpt-4o", openai_key_env="OPENAI_API_KEY")
+
 # Lookups read the store, no network.
 print(crab_r.lookup("state", "my-project.mart.orders.status"))
 print(crab_r.upstream("state", "my-project.mart.orders.status"))
@@ -29,7 +34,8 @@ print(crab_r.upstream("state", "my-project.mart.orders.status"))
 
 Options are the `crab-describe` command's flags as keyword arguments
 (`lineage_location="us"`, `profile=False`, `apply=True`, ...). Credentials come
-from Application Default Credentials. Nothing is written to the warehouse
-unless `apply=True`.
+from Application Default Credentials; with `openai_url=` the model's key comes
+from the variable `openai_key_env=` names (default `OPENAI_API_KEY`). Nothing
+is written to the warehouse unless `apply=True`.
 
 License: AGPL-3.0-or-later, or a commercial license from lituus-io.
