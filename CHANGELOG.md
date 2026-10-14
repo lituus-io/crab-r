@@ -6,6 +6,11 @@ All notable changes to crab-r are documented here. Format follows
 
 ## 0.2.2
 
+- **Built on uu-graph-r 0.4.2 and uu-objstore-r 0.2.3.** The store core this crate
+  embeds now refuses an attribute set larger than one log record before staging
+  it; in 0.4.0–0.4.1 such a set committed, then the next writable open truncated
+  the log there and lost that commit and every later one. The dependency floors
+  rise to match, so no build of this crate links the earlier core.
 - **An OpenAI-compatible model for `describe`**: `--openai-url https://host/v1`
   (`/chat/completions` appended) and `--openai-model M` replace Vertex AI with
   any OpenAI-compatible chat-completions server; BigQuery and Dataplex stay on
