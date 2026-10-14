@@ -13,7 +13,9 @@
 //!   (column → the columns it is computed from; `EXACT` for unchanged
 //!   copies), `Conditions` (table → the columns deciding its rows).
 //!   Consumers outside the described datasets derive from ours.
-//! - **Attributes**: types, producing SQL, provenance, confidence, checks.
+//! - **Attributes**: types, producing SQL, provenance, confidence, checks,
+//!   and the static mark of a node a lineage export declared
+//!   ([`crate::describe::ingest`]).
 //!
 //! Freshness rides on graph-r's TTL: a reused table is touched `Unchanged`
 //! (its revalidation interval grows), a re-described one is upserted and
@@ -60,6 +62,11 @@ pub mod attr {
     pub const UNIT: u8 = 14;
     /// Column: ids of its checks, comma separated.
     pub const CHECK_IDS: u8 = 15;
+    /// Any node: declared by a static lineage export (see
+    /// [`super::super::ingest`]); the declaring resource, or `declared`.
+    /// A describe keeps it, and keeps the `Derives` edges such a node
+    /// has, beside what it traced itself.
+    pub const STATIC: u8 = 16;
 }
 
 /// Key of the root node.
@@ -203,6 +210,10 @@ fn save_table(
     if let Some(e) = &t.existing {
         attrs.push((attr::EXISTING, e));
     }
+    let table_mark = snap.attr(tkey, attr::STATIC);
+    if let Some(m) = table_mark {
+        attrs.push((attr::STATIC, m));
+    }
     w.set_attrs(tkey, &attrs)?;
 
     let mut table_edges = Vec::new();
@@ -221,6 +232,9 @@ fn save_table(
             (attr::TRANSFORM, &transform),
             (attr::CHECK_IDS, &ids),
         ];
+        if let Some(m) = snap.attr(ckey, attr::STATIC) {
+            attrs.push((attr::STATIC, m));
+        }
         for (k, v) in [
             (attr::EXISTING, &c.existing),
             (attr::CONFIDENCE, &c.confidence),
@@ -246,6 +260,9 @@ fn save_table(
                 derives.push((key, EdgeType::Derives, 1, if exact { EXACT } else { 0 }));
             }
         }
+        if snap.attr(ckey, attr::STATIC).is_some() {
+            declared(snap, ckey, &mut derives);
+        }
         w.set_edges_with_flags(ckey, &derives);
         for k in &c.consumers {
             let Some(key) = external(w, snap, uri, written, k, now)? else { continue };
@@ -264,8 +281,26 @@ fn save_table(
             table_edges.push((key, EdgeType::Conditions, 1));
         }
     }
+    if table_mark.is_some() {
+        let mut d = Vec::new();
+        declared(snap, tkey, &mut d);
+        table_edges.extend(d.into_iter().map(|(k, t, w, _)| (k, t, w)));
+    }
     w.set_edges(tkey, &table_edges);
     Ok(())
+}
+
+/// A static node's recorded `Derives` edges the traced set lacks: a
+/// declaration the trace did not find (the program says it, the job history
+/// may not yet) is kept, not dropped. Traced edges come first and win on
+/// the same source, so their flags stand.
+fn declared(snap: &Snapshot<'_>, key: UrlKey, edges: &mut Vec<(UrlKey, EdgeType, u16, u8)>) {
+    let mut it = snap.neighbors(key);
+    while let Some(e) = graph_r::LendingIterator::next(&mut it) {
+        if e.etype == EdgeType::Derives && !edges.iter().any(|x| x.0 == e.dst_key) {
+            edges.push((e.dst_key, EdgeType::Derives, e.weight, e.flags));
+        }
+    }
 }
 
 /// The node of a column known only through lineage (outside the described

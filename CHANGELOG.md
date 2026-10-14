@@ -29,6 +29,28 @@ All notable changes to crab-r are documented here. Format follows
   `--price-*` without `--openai-url`; `--vertex-project`,
   `--vertex-location` and `--model` with it.
 - The `cli` feature (and so the Python wheel) now includes `openai`.
+- **Static lineage into a store**: `crab_r.ingest_lineage(store, nodes,
+  edges)` (Rust: `describe::ingest`) takes a deployment program's SQL lineage
+  export as it is emitted — `bq://` ids, `contains`, `derives_from` and
+  `column_derives_from` edges — and writes the nodes a describe run keys, so
+  `table`, `lookup`, `upstream` and `downstream` answer for declared tables
+  offline. It only adds (a recorded description, type or edge is kept),
+  writes in one commit or none, and a repeat of the same export writes
+  nothing. Kinds and relationships crab-r does not model are counted by name
+  in `skipped`; unusable entries are listed in `rejected` by position and
+  never repeated.
+- A later `describe` enriches the same nodes and keeps what was declared:
+  the static mark (attribute 16, the declaring resource) and the declared
+  `Derives` edges survive beside what the run traced. A declared node carries
+  no incremental key, so its first describe does the work in full.
+- **One BigQuery name, three spellings**: `bq://p/d/t#column` (the export's
+  ids), `bq://p/d/t/column` (a path form for stores whose url
+  canonicalisation drops a `#fragment`, which would collapse a column onto
+  its table) and `p.d.t.column`. `base::key::BqName` parses any of them;
+  Python: `bq_id`, `bq_path`, `dotted`. A component with a dot, quote,
+  backtick, slash, whitespace or control character is refused, not guessed.
+- Lookups take `bq://` names in either form, and `upstream` / `downstream`
+  of a table name walk table-level lineage.
 
 ## 0.2.1
 

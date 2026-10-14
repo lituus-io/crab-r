@@ -32,6 +32,47 @@ print(crab_r.lookup("state", "my-project.mart.orders.status"))
 print(crab_r.upstream("state", "my-project.mart.orders.status"))
 ```
 
+## Static lineage and BigQuery names
+
+A deployment program's SQL lineage export (`bq://` ids; `contains`,
+`derives_from` and `column_derives_from` edges) can be written into a store
+before any describe, so declared tables answer lookups offline:
+
+```python
+export = ...  # {"nodes": [...], "edges": [...]}, as the lineage export emits it
+done = crab_r.ingest_lineage("state", export["nodes"], export["edges"])
+# {"committed": True, "created": 14, "updated": 0, "edges": 20,
+#  "skipped": {"writes_to": 1, ...}, "rejected": []}
+print(crab_r.upstream("state", "bq://proj/mart/orders_v#amt"))
+print(crab_r.downstream("state", "proj.mart.orders"))   # a table: what reads it
+```
+
+Ingest only adds: a description, type or edge the store holds is kept, and a
+repeat ingest of the same export writes nothing. A later `describe` fills the
+same nodes in and keeps what was declared. Entries crab-r does not model
+(routines, `writes_to`, `defined_by`, ...) are counted in `skipped`; unusable
+ones are listed in `rejected` by position, never repeated.
+
+One BigQuery name has three spellings, and every function here accepts all
+of them:
+
+| Spelling | Where it comes from |
+|---|---|
+| `bq://p/d/t#column` (`bq_id`) | the lineage export's own ids |
+| `bq://p/d/t/column` (`bq_path`) | a store that keys by url and canonicalises urls the way graph-r's Python `add()` does, which **drops the `#fragment`** — there a column's `#` id would silently become its table. Key such a store with the path form |
+| `p.d.t.column` (`dotted`) | the warehouse's own |
+
+```python
+crab_r.bq_path("bq://proj/mart/orders#Status")   # 'bq://proj/mart/orders/status'
+crab_r.dotted("bq://proj/mart/orders/status")    # 'proj.mart.orders.status'
+```
+
+crab-r's own store keys the exact `sql://bigquery/p/d/t#column` uri with no
+url canonicalisation, so columns and tables stay distinct there. Column
+names are lowercased (BigQuery treats them case-insensitively); a component
+holding anything but letters, digits, `_` and `-` (and `:` in a project) is
+refused rather than guessed at.
+
 Options are the `crab-describe` command's flags as keyword arguments
 (`lineage_location="us"`, `profile=False`, `apply=True`, ...). Credentials come
 from Application Default Credentials; with `openai_url=` the model's key comes

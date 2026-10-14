@@ -652,7 +652,16 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
     let store = graph_r::Store::open_read_only(dir).map_err(|e| format!("{dir}: {e}"))?;
     let snap = store.snapshot();
     let mut uri = crate::base::key::UriBuf::new();
+    // A `bq://` name, in either of its forms, is read by the one parser;
+    // a dotted one keeps the right-to-left split, which also takes the
+    // domain-scoped projects (`example.com:p`) the parser refuses.
     let key_of = |uri: &mut crate::base::key::UriBuf, name: &str, column: bool| -> Option<UrlKey> {
+        use crate::base::key::{BqName, Level, BQ_SCHEME};
+        if name.starts_with(BQ_SCHEME) {
+            let n = BqName::parse(name).ok()?;
+            let want = if column { Level::Column } else { Level::Table };
+            return if n.level() == want { n.uri(uri).map(UrlKey::of) } else { None };
+        }
         if column {
             let (t, c) = name.rsplit_once('.')?;
             let (p, d, t) = crate::base::key::split_fqn(t)?;
@@ -671,7 +680,11 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
     let line = |k: UrlKey| {
         let n = snap.node(k);
         let d = n.and_then(|n| n.snippet).unwrap_or("");
-        let prov = snap.attr(k, attr::ACTION).unwrap_or("");
+        // What a describe did, else that a lineage export declared it.
+        let prov = snap
+            .attr(k, attr::ACTION)
+            .or_else(|| snap.attr(k, attr::STATIC).map(|_| "static"))
+            .unwrap_or("");
         format!(
             "{}{}{}",
             label(k),
@@ -716,6 +729,9 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
                     EdgeType::Conditions => {
                         writeln!(out, "  rows decided by {}", label(e.dst_key)).unwrap_or_default();
                     }
+                    EdgeType::Derives => {
+                        writeln!(out, "  from {}", label(e.dst_key)).unwrap_or_default();
+                    }
                     _ => {}
                 }
             }
@@ -755,8 +771,13 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
             });
         }
         _ => {
-            let Some(k) = key_of(&mut uri, name, true).filter(|k| snap.node(*k).is_some()) else {
-                return Err(format!("no column {name}"));
+            // A column, else a table: a table's lineage is the tables it
+            // reads, as a lineage export declares them.
+            let Some(k) = key_of(&mut uri, name, true)
+                .filter(|k| snap.node(*k).is_some())
+                .or_else(|| key_of(&mut uri, name, false).filter(|k| snap.node(*k).is_some()))
+            else {
+                return Err(format!("no column or table {name}"));
             };
             let (dir, follow): (Direction, fn(EdgeType) -> bool) = if cmd == "upstream" {
                 (Direction::Out, |t| t == EdgeType::Derives)

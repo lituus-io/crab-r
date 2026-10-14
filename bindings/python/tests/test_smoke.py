@@ -2,9 +2,14 @@
 # Copyright: lituus-io, all rights reserved
 """Offline checks of the module surface (no credentials, no network)."""
 
+import json
+import pathlib
+
 import pytest
 
 import crab_r
+
+_EXPORT = pathlib.Path(__file__).resolve().parents[3] / "tests" / "data" / "static_lineage"
 
 
 def test_version_and_surface():
@@ -52,3 +57,57 @@ def test_a_missing_key_variable_is_named_before_any_network(monkeypatch):
             price_input_usd_per_mtok=1,
             price_output_usd_per_mtok=2,
         )
+
+
+def test_the_lineage_and_name_functions_are_exposed():
+    for name in ("ingest_lineage", "bq_id", "bq_path", "dotted"):
+        assert callable(getattr(crab_r, name))
+
+
+def test_every_spelling_of_a_name_is_one_name():
+    for spelled in ("bq://p/d/t#Col", "bq://p/d/t/col", "p.d.t.COL"):
+        assert crab_r.bq_id(spelled) == "bq://p/d/t#col"
+        assert crab_r.bq_path(spelled) == "bq://p/d/t/col"
+        assert crab_r.dotted(spelled) == "p.d.t.col"
+    assert crab_r.bq_path("bq://p/d/t") == "bq://p/d/t"
+    for bad in ("", "bq://p/d/t#a.b", "p.d.t`; DROP TABLE x", "bq://p/d/t/c#c"):
+        with pytest.raises(ValueError) as e:
+            crab_r.bq_id(bad)
+        assert "DROP" not in str(e.value)
+
+
+def _export():
+    return (json.loads((_EXPORT / "nodes.json").read_text()),
+            json.loads((_EXPORT / "edges.json").read_text()))
+
+
+def test_a_lineage_export_ingests_once_and_answers_offline(tmp_path):
+    store = str(tmp_path / "state")
+    nodes, edges = _export()
+    done = crab_r.ingest_lineage(store, nodes, edges)
+    assert done["committed"] is True
+    assert (done["created"], done["updated"], done["edges"]) == (14, 0, 20)
+    assert done["skipped"] == {"defined_by": 4, "derives_from:bq-routine": 1, "routine": 1, "writes_to": 1}
+    assert done["rejected"] == []
+    again = crab_r.ingest_lineage(store, nodes, edges)
+    assert again["committed"] is False
+    assert "other/raw/events#amount" in crab_r.upstream(store, "bq://proj/mart/orders_v#amt")
+    assert "proj/mart/orders_v" in crab_r.downstream(store, crab_r.dotted("bq://other/raw/events"))
+    assert crab_r.lookup(store, "bq://proj/mart/orders_t/doubled") == crab_r.lookup(
+        store, "proj.mart.orders_t.doubled")
+    assert "[static]" in crab_r.table(store, "bq://proj/mart/orders_v")
+
+
+def test_unusable_entries_are_refused_by_position(tmp_path):
+    done = crab_r.ingest_lineage(
+        str(tmp_path / "state"),
+        [{"id": "bq://p/d/t`; DROP TABLE x", "kind": "table"}, {"id": "bq://p/d/ok", "kind": "view"}, 3],
+        [{"relationship": "derives_from", "source_id": "bq://p/d/ok"}],
+    )
+    assert [(r["side"], r["index"]) for r in done["rejected"]] == [("node", 0), ("node", 2), ("edge", 0)]
+    assert "DROP" not in json.dumps(done)
+    assert done["created"] == 2
+    with pytest.raises(crab_r.CrabError):
+        crab_r.ingest_lineage(str(tmp_path / "x"), {"not": "a list"}, [])
+    with pytest.raises(TypeError):
+        crab_r.ingest_lineage(str(tmp_path / "y"), [object()], [])
