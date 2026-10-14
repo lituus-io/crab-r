@@ -1,4 +1,4 @@
-// Author: support@lituus.io
+// Author: spicyzhug@gmail.com
 // Copyright: lituus-io, all rights reserved
 //
 //! Zero-copy JSON: a pull [`Scanner`] and a streaming [`Writer`].

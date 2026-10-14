@@ -1,4 +1,4 @@
-// Author: support@lituus.io
+// Author: spicyzhug@gmail.com
 // Copyright: lituus-io, all rights reserved
 //
 // Tracing producers (plan E1/E4 budget: ≤ 5 ms per producer): a CTAS through

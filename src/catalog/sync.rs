@@ -1,4 +1,4 @@
-// Author: support@lituus.io
+// Author: spicyzhug@gmail.com
 // Copyright: lituus-io, all rights reserved
 //
 //! Build a catalog from BigQuery INFORMATION_SCHEMA in one concurrent pass.

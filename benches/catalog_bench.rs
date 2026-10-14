@@ -1,4 +1,4 @@
-// Author: support@lituus.io
+// Author: spicyzhug@gmail.com
 // Copyright: lituus-io, all rights reserved
 //
 // Catalog at enterprise scale: 10 000 tables × 50 columns (500 000 entities,

@@ -1,4 +1,4 @@
-// Author: support@lituus.io
+// Author: spicyzhug@gmail.com
 // Copyright: lituus-io, all rights reserved
 //
 // The live S2 baseline: catalog sync → engine (Vertex Gemini + BigQuery) →
