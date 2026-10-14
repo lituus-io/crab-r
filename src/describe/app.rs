@@ -1,4 +1,4 @@
-// Author: support@lituus.io
+// Author: spicyzhug@gmail.com
 // Copyright: lituus-io, all rights reserved
 //
 //! The `crab-describe` command (feature `cli`): option parsing, a full run
@@ -11,6 +11,10 @@
 //! crab-describe --dataset my-proj.mart[,my-proj.stg] [--region US]
 //!     [--jobs-project my-proj] [--lookback-days 90] [--billing-project my-proj]
 //!     [--vertex-project my-proj] [--vertex-location us-central1] [--model gemini-2.5-flash]
+//!     [--openai-url https://host/v1 --openai-model M]  # an OpenAI-compatible server instead
+//!         [--openai-key-env OPENAI_API_KEY] [--openai-stream]
+//!         [--openai-context-tokens 128000] [--openai-max-output-tokens 16384]
+//!         [--price-input-usd-per-mtok X --price-output-usd-per-mtok X]
 //!     [--lineage-location us]            # add Dataplex lineage (Data Lineage API)
 //!     [--downstream]                     # with it: consumers outside the datasets
 //!     [--no-profile] [--no-audit] [--overwrite] [--rounds 2] [--concurrency 4]
@@ -41,16 +45,29 @@
 //! warehouse unless `--apply` is given; then only empty descriptions are
 //! filled (flagged corrections too with `--correct`), each table under
 //! `If-Match` of the resource it read.
+//!
+//! With `--openai-url` the model is any OpenAI-compatible chat-completions
+//! server instead of Vertex AI; BigQuery and Dataplex stay on ADC. Its bearer
+//! key is read from the environment variable `--openai-key-env` names, never
+//! from the command line: argv is visible to every local process, and this
+//! command echoes argv-derived text in its usage and errors. Requests are
+//! unary unless `--openai-stream` is given, because a gateway may refuse
+//! streamed structured output while serving it unary (`n` candidates still
+//! share one request). `--budget-usd` is enforced from the model's price, so
+//! a run with no price for its model refuses to start rather than run with
+//! an inert budget.
 
 use crate::describe::describe::{describe, is_virtual, DescribeConfig, Report, Target};
 use crate::describe::report::{self, Applied};
 use crate::exec::bigquery::{BigQuery, BigQueryConfig};
+use crate::exec::{TableMetadata, Warehouse};
 use crate::lineage::dataplex::{Dataplex, DataplexConfig};
-use crate::lineage::NoLineage;
+use crate::lineage::{LineageSource, NoLineage};
+use crate::llm::openai::{OpenAi, OpenAiConfig};
 use crate::llm::vertex::{ExplicitCache, Vertex, VertexConfig};
-use crate::llm::{CacheSupport, Caps, ConstraintSupport, Price};
+use crate::llm::{CacheSupport, Caps, ConstraintSupport, Model, Price};
 use objstore_r::http::{Client, HttpConfig};
-use objstore_r::token::Adc;
+use objstore_r::token::{Adc, Static};
 use std::fmt::Write as _;
 
 /// Parsed command-line options of a describe run (see [`USAGE`]).
@@ -85,12 +102,332 @@ pub struct Options {
     emit_schema: Option<String>,
     apply: bool,
     correct: bool,
+    /// The OpenAI-compatible model (`--openai-url`); `None` is Vertex AI.
+    openai: Option<OpenAiOptions>,
+}
+
+/// The variable `--openai-key-env` names when it is not given.
+pub const DEFAULT_KEY_ENV: &str = "OPENAI_API_KEY";
+/// Context window assumed without `--openai-context-tokens` (a gpt-4o-class
+/// model).
+pub const DEFAULT_CONTEXT_TOKENS: u32 = 128_000;
+/// Output cap per candidate without `--openai-max-output-tokens` (a
+/// gpt-4o-class model).
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
+
+/// Public list prices, micro-dollars per million tokens (uncached input,
+/// cached input, output), for the exact model names whose price is not in
+/// doubt. A dated snapshot or a provider-prefixed name is not listed: it may
+/// be priced differently, and a wrong price would mis-enforce the budget.
+/// Anything else needs both `--price-*` flags.
+const LIST_PRICES: [(&str, Price); 5] = [
+    ("gpt-4o", Price { input: 2_500_000, cached_input: 1_250_000, output: 10_000_000 }),
+    ("gpt-4o-mini", Price { input: 150_000, cached_input: 75_000, output: 600_000 }),
+    ("gpt-4.1", Price { input: 2_000_000, cached_input: 500_000, output: 8_000_000 }),
+    ("gpt-4.1-mini", Price { input: 400_000, cached_input: 100_000, output: 1_600_000 }),
+    ("gpt-4.1-nano", Price { input: 100_000, cached_input: 25_000, output: 400_000 }),
+];
+
+/// Where an OpenAI-compatible model's price came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PriceFrom {
+    /// `--price-input-usd-per-mtok` / `--price-output-usd-per-mtok`.
+    Flags,
+    /// The public list price of the named model ([`LIST_PRICES`]).
+    ListPrice,
+}
+
+/// The OpenAI-compatible model of a run, resolved when the options are
+/// parsed — except its key, which is read from its variable only when the
+/// run connects, so parsed options (cloned, debug-printed) never hold it.
+#[derive(Clone, Debug)]
+pub struct OpenAiOptions {
+    url: String,
+    model: String,
+    key_env: String,
+    stream: bool,
+    context_tokens: u32,
+    max_output_tokens: u32,
+    price: Price,
+    price_from: PriceFrom,
+}
+
+impl OpenAiOptions {
+    /// The chat-completions URL requests go to.
+    #[must_use]
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// The environment variable the key is read from.
+    #[must_use]
+    pub fn key_env(&self) -> &str {
+        &self.key_env
+    }
+
+    /// Where the price came from.
+    #[must_use]
+    pub fn price_from(&self) -> PriceFrom {
+        self.price_from
+    }
+
+    /// The model's capabilities. JSON schema is the only constraint an
+    /// OpenAI-compatible API is known to accept; `n` candidates come from
+    /// one request, streamed only for a single candidate (the protocol
+    /// interleaves streamed candidates, but a server that streams at all is
+    /// not thereby known to stream several), and no explicit prefix cache.
+    #[must_use]
+    pub fn caps(&self) -> Caps {
+        Caps {
+            id: self.model.clone(),
+            constraints: ConstraintSupport { lark: false, gbnf: false, json_schema: true },
+            max_candidates: 8,
+            max_stream_candidates: 1,
+            cache: CacheSupport::None,
+            context_tokens: self.context_tokens,
+            max_output_tokens: self.max_output_tokens,
+            streaming: self.stream,
+            price: self.price,
+        }
+    }
+
+    /// The backend's settings.
+    #[must_use]
+    pub fn config(&self) -> OpenAiConfig {
+        OpenAiConfig {
+            url: self.url.clone(),
+            model: self.model.clone(),
+            caps: self.caps(),
+            extra: None,
+        }
+    }
+
+    /// The model, authorised with the key read from [`key_env`](Self::key_env).
+    pub fn connect(&self) -> Result<OpenAi<Client<Static>>, String> {
+        self.connect_with(std::env::var_os(&self.key_env))
+    }
+
+    /// [`connect`](Self::connect) with the variable's value as read.
+    fn connect_with(
+        &self,
+        value: Option<std::ffi::OsString>,
+    ) -> Result<OpenAi<Client<Static>>, String> {
+        let key = api_key(&self.key_env, value)?;
+        let client = Client::new(Static::new(key), HttpConfig::default())
+            .map_err(|e| format!("http: {e}"))?;
+        Ok(OpenAi::new(client, self.config()))
+    }
+
+    /// The run-log line naming the model, the host, the request mode and the
+    /// price the budget is enforced from (never the key, nor the path).
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let host = self.url.split_once("://").map_or("", |(_, r)| r);
+        let host = host.split('/').next().unwrap_or("");
+        let usd = |micro: u64| micro as f64 / 1e6;
+        let source = match self.price_from {
+            PriceFrom::Flags => "given".to_owned(),
+            PriceFrom::ListPrice => format!(
+                "the public list price of {}; a gateway may bill otherwise (--price-input-usd-per-mtok / --price-output-usd-per-mtok override it)",
+                self.model
+            ),
+        };
+        format!(
+            "model: {} (OpenAI-compatible) at {host}, {} requests; price ${:.4} input / ${:.4} output per million tokens: {source}",
+            self.model,
+            if self.stream { "streamed" } else { "unary" },
+            usd(self.price.input),
+            usd(self.price.output),
+        )
+    }
+}
+
+/// The key from `var`'s value. Only the variable's name ever appears in an
+/// error; surrounding whitespace (a trailing newline from a file) is dropped.
+fn api_key(var: &str, value: Option<std::ffi::OsString>) -> Result<String, String> {
+    let Some(value) = value else {
+        return Err(format!("{var} is not set: it must hold the model's API key (--openai-key-env names the variable)"));
+    };
+    let Ok(value) = value.into_string() else {
+        return Err(format!("{var} is not valid UTF-8"));
+    };
+    let key = value.trim();
+    if key.is_empty() {
+        return Err(format!("{var} is empty: it must hold the model's API key"));
+    }
+    if key.chars().any(char::is_control) || key.contains(' ') {
+        return Err(format!("{var} holds control characters or spaces: not an API key"));
+    }
+    Ok(key.to_owned())
+}
+
+/// `NAME` is an environment-variable name. Upper case only: a key passed
+/// here by mistake (it would then be echoed as a name) is almost always
+/// refused by this rule.
+fn is_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_uppercase() || c == '_')
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && name.len() <= 128
+}
+
+/// The chat-completions URL for `base`: `/chat/completions` appended unless
+/// present. HTTPS, or plain HTTP to loopback (the transport's own rule,
+/// applied before anything else runs). Credentials, a query or a fragment in
+/// the URL are refused — a key must never travel in it — and no error
+/// repeats the URL.
+fn chat_url(base: &str) -> Result<String, String> {
+    if base.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("--openai-url: whitespace or control characters".into());
+    }
+    let rest = base
+        .strip_prefix("https://")
+        .or_else(|| base.strip_prefix("http://"))
+        .ok_or("--openai-url: must be https:// (http:// only to loopback)")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.contains('@') {
+        return Err(
+            "--openai-url: credentials in the URL are refused; put the key in a variable named by --openai-key-env"
+                .into(),
+        );
+    }
+    if rest.contains(['?', '#']) {
+        return Err(
+            "--openai-url: a query or fragment is refused (no key travels in the URL)".into()
+        );
+    }
+    if authority.is_empty() || authority.starts_with(':') {
+        return Err("--openai-url: no host".into());
+    }
+    let base = base.trim_end_matches('/');
+    let url = if base.ends_with("/chat/completions") {
+        base.to_owned()
+    } else {
+        format!("{base}/chat/completions")
+    };
+    let loopback = ["http://127.0.0.1:", "http://127.0.0.1/", "http://localhost:", "http://[::1]:"];
+    if url.starts_with("http://") && !loopback.iter().any(|p| url.starts_with(p)) {
+        return Err("--openai-url: must be https:// (http:// only to loopback)".into());
+    }
+    Ok(url)
+}
+
+/// A `--price-*-usd-per-mtok` value in micro-dollars per million tokens.
+fn usd_per_mtok(flag: &str, v: &str) -> Result<u64, String> {
+    match v.parse::<f64>() {
+        // A million dollars per million tokens is far past any real price;
+        // beyond it is a typo, and the product must stay exact in u64.
+        Ok(x) if x.is_finite() && (0.0..=1e6).contains(&x) => Ok((x * 1e6).round() as u64),
+        _ => Err(format!("{flag}: US dollars per million tokens, 0 to 1000000")),
+    }
+}
+
+/// The `--openai-*` and `--price-*` options as given, before they are
+/// checked together.
+#[derive(Default)]
+struct OpenAiArgs {
+    url: Option<String>,
+    model: Option<String>,
+    key_env: Option<String>,
+    stream: bool,
+    context_tokens: Option<u32>,
+    max_output_tokens: Option<u32>,
+    price_input: Option<u64>,
+    price_output: Option<u64>,
+}
+
+impl OpenAiArgs {
+    /// Check the options together. `vertex` is the first Vertex-only option
+    /// given, if any: never silently ignored beside `--openai-url`.
+    fn resolve(self, vertex: Option<&str>) -> Result<Option<OpenAiOptions>, String> {
+        let Some(base) = self.url else {
+            let given = [
+                ("--openai-model", self.model.is_some()),
+                ("--openai-key-env", self.key_env.is_some()),
+                ("--openai-stream", self.stream),
+                ("--openai-context-tokens", self.context_tokens.is_some()),
+                ("--openai-max-output-tokens", self.max_output_tokens.is_some()),
+                ("--price-input-usd-per-mtok", self.price_input.is_some()),
+                ("--price-output-usd-per-mtok", self.price_output.is_some()),
+            ];
+            return match given.iter().find(|(_, g)| *g) {
+                Some((flag, _)) => Err(format!(
+                    "{flag} goes with --openai-url (the Vertex AI model takes no such option)"
+                )),
+                None => Ok(None),
+            };
+        };
+        if let Some(flag) = vertex {
+            return Err(format!(
+                "{flag} configures Vertex AI, which --openai-url replaces (name the model with --openai-model)"
+            ));
+        }
+        let url = chat_url(&base)?;
+        let model = self
+            .model
+            .filter(|m| !m.trim().is_empty())
+            .ok_or("--openai-url needs --openai-model (the model as the server names it)")?;
+        let key_env = self.key_env.unwrap_or_else(|| DEFAULT_KEY_ENV.into());
+        if !is_env_name(&key_env) {
+            return Err(
+                "--openai-key-env: the NAME of an environment variable (A-Z, 0-9, _), never the key itself"
+                    .into(),
+            );
+        }
+        let context_tokens = self.context_tokens.unwrap_or(DEFAULT_CONTEXT_TOKENS);
+        let max_output_tokens = self.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
+        if context_tokens == 0 || max_output_tokens == 0 {
+            return Err("--openai-context-tokens and --openai-max-output-tokens: above 0".into());
+        }
+        // `--budget-usd` is enforced from this price: without one the budget
+        // would be inert, so the run refuses rather than guesses. No cached
+        // price flag exists, so cached input is charged as uncached — the
+        // budget may over-count, never under-count.
+        let (price, price_from) = match (self.price_input, self.price_output) {
+            (Some(input), Some(output)) => {
+                (Price { input, cached_input: input, output }, PriceFrom::Flags)
+            }
+            (None, None) => match LIST_PRICES.iter().find(|(name, _)| *name == model) {
+                Some(&(_, p)) => (p, PriceFrom::ListPrice),
+                None => {
+                    return Err(format!(
+                        "no known price for model {model}: --budget-usd cannot be enforced without --price-input-usd-per-mtok and --price-output-usd-per-mtok"
+                    ))
+                }
+            },
+            _ => {
+                return Err(
+                    "--price-input-usd-per-mtok and --price-output-usd-per-mtok go together".into()
+                )
+            }
+        };
+        Ok(Some(OpenAiOptions {
+            url,
+            model,
+            key_env,
+            stream: self.stream,
+            context_tokens,
+            max_output_tokens,
+            price,
+            price_from,
+        }))
+    }
+}
+
+impl Options {
+    /// The OpenAI-compatible model, when `--openai-url` chose one.
+    #[must_use]
+    pub fn openai(&self) -> Option<&OpenAiOptions> {
+        self.openai.as_ref()
+    }
 }
 
 /// Usage of a describe run.
 pub const USAGE: &str = "usage: crab-describe [PROJECT | PROJECT.DATASET | PROJECT.DATASET.TABLE]... \
 [--sql FILE|- [--target PROJECT.DATASET.TABLE] [--default-dataset PROJECT.DATASET]] [--upstream N] [--region US] [--jobs-project P] [--billing-project P] [--lookback-days N] \
-[--vertex-project P] [--vertex-location L] [--model M] [--lineage-location L] [--downstream] [--no-profile] [--no-audit] [--overwrite] \
+[--vertex-project P] [--vertex-location L] [--model M] \
+[--openai-url URL --openai-model M [--openai-key-env NAME] [--openai-stream] [--openai-context-tokens N] [--openai-max-output-tokens N] \
+[--price-input-usd-per-mtok X --price-output-usd-per-mtok X]] [--lineage-location L] [--downstream] [--no-profile] [--no-audit] [--overwrite] \
 [--rounds N] [--concurrency N] [--budget-usd X] [--out FILE] [--store DIR] [--publish gs://B/PREFIX|DIR] [--emit-schema DIR] [--apply] [--correct]";
 
 /// Parse the options of a describe run (the CLI's arguments after the
@@ -123,7 +460,11 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
         emit_schema: None,
         apply: false,
         correct: false,
+        openai: None,
     };
+    let mut oa = OpenAiArgs::default();
+    // The first Vertex-only option given (refused beside `--openai-url`).
+    let mut vertex: Option<&'static str> = None;
     let mut it = args.into_iter();
     while let Some(flag) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -141,9 +482,41 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
             "--lookback-days" => {
                 a.lookback_days = val(&flag)?.parse().map_err(|_| "--lookback-days: a number")?;
             }
-            "--vertex-project" => a.vertex_project = Some(val(&flag)?),
-            "--vertex-location" => a.vertex_location = val(&flag)?,
-            "--model" => a.model = val(&flag)?,
+            "--vertex-project" => {
+                a.vertex_project = Some(val(&flag)?);
+                vertex = vertex.or(Some("--vertex-project"));
+            }
+            "--vertex-location" => {
+                a.vertex_location = val(&flag)?;
+                vertex = vertex.or(Some("--vertex-location"));
+            }
+            "--model" => {
+                a.model = val(&flag)?;
+                vertex = vertex.or(Some("--model"));
+            }
+            "--openai-url" => oa.url = Some(val(&flag)?),
+            "--openai-model" => oa.model = Some(val(&flag)?),
+            "--openai-key-env" => oa.key_env = Some(val(&flag)?),
+            "--openai-stream" => oa.stream = true,
+            "--openai-context-tokens" => {
+                oa.context_tokens =
+                    Some(val(&flag)?.parse().map_err(|_| "--openai-context-tokens: a number")?);
+            }
+            "--openai-max-output-tokens" => {
+                oa.max_output_tokens =
+                    Some(val(&flag)?.parse().map_err(|_| "--openai-max-output-tokens: a number")?);
+            }
+            "--price-input-usd-per-mtok" => {
+                oa.price_input = Some(usd_per_mtok(&flag, &val(&flag)?)?);
+            }
+            "--price-output-usd-per-mtok" => {
+                oa.price_output = Some(usd_per_mtok(&flag, &val(&flag)?)?);
+            }
+            // The key itself is never an option: argv is visible to every
+            // local process. Refused without repeating the argument.
+            key if key == "--openai-key" || key.starts_with("--openai-key=") => {
+                return Err("the API key is never taken on the command line: put it in an environment variable and name that with --openai-key-env".into());
+            }
             "--lineage-location" => a.lineage_location = Some(val(&flag)?),
             "--downstream" => a.downstream = true,
             "--no-profile" => a.profile = false,
@@ -169,6 +542,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
             name => a.targets.push(Target::parse(name)),
         }
     }
+    // Before `--sql` is read: a refused option fails before stdin is taken.
+    a.openai = oa.resolve(vertex)?;
     if let Some(src) = a.sql.take() {
         let sql = if src == "-" {
             let mut s = String::new();
@@ -277,7 +652,16 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
     let store = graph_r::Store::open_read_only(dir).map_err(|e| format!("{dir}: {e}"))?;
     let snap = store.snapshot();
     let mut uri = crate::base::key::UriBuf::new();
+    // A `bq://` name, in either of its forms, is read by the one parser;
+    // a dotted one keeps the right-to-left split, which also takes the
+    // domain-scoped projects (`example.com:p`) the parser refuses.
     let key_of = |uri: &mut crate::base::key::UriBuf, name: &str, column: bool| -> Option<UrlKey> {
+        use crate::base::key::{BqName, Level, BQ_SCHEME};
+        if name.starts_with(BQ_SCHEME) {
+            let n = BqName::parse(name).ok()?;
+            let want = if column { Level::Column } else { Level::Table };
+            return if n.level() == want { n.uri(uri).map(UrlKey::of) } else { None };
+        }
         if column {
             let (t, c) = name.rsplit_once('.')?;
             let (p, d, t) = crate::base::key::split_fqn(t)?;
@@ -296,7 +680,11 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
     let line = |k: UrlKey| {
         let n = snap.node(k);
         let d = n.and_then(|n| n.snippet).unwrap_or("");
-        let prov = snap.attr(k, attr::ACTION).unwrap_or("");
+        // What a describe did, else that a lineage export declared it.
+        let prov = snap
+            .attr(k, attr::ACTION)
+            .or_else(|| snap.attr(k, attr::STATIC).map(|_| "static"))
+            .unwrap_or("");
         format!(
             "{}{}{}",
             label(k),
@@ -341,6 +729,9 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
                     EdgeType::Conditions => {
                         writeln!(out, "  rows decided by {}", label(e.dst_key)).unwrap_or_default();
                     }
+                    EdgeType::Derives => {
+                        writeln!(out, "  from {}", label(e.dst_key)).unwrap_or_default();
+                    }
                     _ => {}
                 }
             }
@@ -380,8 +771,13 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
             });
         }
         _ => {
-            let Some(k) = key_of(&mut uri, name, true).filter(|k| snap.node(*k).is_some()) else {
-                return Err(format!("no column {name}"));
+            // A column, else a table: a table's lineage is the tables it
+            // reads, as a lineage export declares them.
+            let Some(k) = key_of(&mut uri, name, true)
+                .filter(|k| snap.node(*k).is_some())
+                .or_else(|| key_of(&mut uri, name, false).filter(|k| snap.node(*k).is_some()))
+            else {
+                return Err(format!("no column or table {name}"));
             };
             let (dir, follow): (Direction, fn(EdgeType) -> bool) = if cmd == "upstream" {
                 (Direction::Out, |t| t == EdgeType::Derives)
@@ -405,10 +801,33 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
     Ok(out)
 }
 
+/// [`describe`] with the lineage source when there is one.
+async fn describe_with<M: Model, W: Warehouse + TableMetadata, L: LineageSource>(
+    model: &M,
+    w: &W,
+    lineage: Option<&L>,
+    cfg: &DescribeConfig,
+) -> Report {
+    match lineage {
+        Some(l) => describe(model, w, l, cfg).await,
+        None => describe(model, w, &NoLineage, cfg).await,
+    }
+}
+
 /// Run a describe: discover, describe, then what the options ask (store,
 /// publish, output file, schema files, apply). Progress lines go to `log`.
 #[allow(clippy::too_many_lines)] // the run's stages, in order
 pub async fn run(a: &Options, log: &mut impl FnMut(&str)) -> Result<Report, String> {
+    // The model's key first: a missing variable fails before any credential
+    // lookup or warehouse call.
+    let openai = match &a.openai {
+        Some(o) => {
+            let model = o.connect()?;
+            log(&o.summary());
+            Some(model)
+        }
+        None => None,
+    };
     let home = a
         .targets
         .iter()
@@ -430,29 +849,6 @@ pub async fn run(a: &Options, log: &mut impl FnMut(&str)) -> Result<Report, Stri
     let bq = BigQuery::new(
         http()?,
         &BigQueryConfig { project: billing.clone(), location: a.region.clone(), endpoint: None },
-    );
-    let vp = a.vertex_project.clone().unwrap_or_else(|| billing.clone());
-    let model = Vertex::new(
-        http()?,
-        VertexConfig {
-            project: vp,
-            location: a.vertex_location.clone(),
-            model: a.model.clone(),
-            caps: Caps {
-                id: a.model.clone(),
-                constraints: ConstraintSupport { lark: false, gbnf: false, json_schema: true },
-                max_candidates: 8,
-                max_stream_candidates: 1,
-                cache: CacheSupport::Explicit,
-                context_tokens: 1_048_576,
-                max_output_tokens: 8_192,
-                streaming: true,
-                price: Price { input: 300_000, cached_input: 30_000, output: 2_500_000 },
-            },
-            thinking_budget: Some(0),
-            endpoint: None,
-            cache: Some(ExplicitCache::default()),
-        },
     );
     let mut cfg = DescribeConfig::new(a.targets.clone(), &a.region, &jobs_project);
     cfg.upstream = a.upstream;
@@ -481,21 +877,47 @@ pub async fn run(a: &Options, log: &mut impl FnMut(&str)) -> Result<Report, Stri
         cfg.prior = crate::describe::state::load(s);
         log(&format!("store: {} tables recorded for reuse", cfg.prior.len()));
     }
-    let report = match &a.lineage_location {
-        Some(loc) => {
-            let dp = Dataplex::new(
-                http()?,
-                DataplexConfig {
-                    project: billing.clone(),
-                    location: loc.clone(),
-                    locations: vec![],
-                    exact_copy: true,
-                    endpoint: None,
+    let dp = match &a.lineage_location {
+        Some(loc) => Some(Dataplex::new(
+            http()?,
+            DataplexConfig {
+                project: billing.clone(),
+                location: loc.clone(),
+                locations: vec![],
+                exact_copy: true,
+                endpoint: None,
+            },
+        )),
+        None => None,
+    };
+    // One monomorphised describe per model: no boxing, no dynamic dispatch.
+    let report = if let Some(model) = &openai {
+        describe_with(model, &bq, dp.as_ref(), &cfg).await
+    } else {
+        let vp = a.vertex_project.clone().unwrap_or_else(|| billing.clone());
+        let model = Vertex::new(
+            http()?,
+            VertexConfig {
+                project: vp,
+                location: a.vertex_location.clone(),
+                model: a.model.clone(),
+                caps: Caps {
+                    id: a.model.clone(),
+                    constraints: ConstraintSupport { lark: false, gbnf: false, json_schema: true },
+                    max_candidates: 8,
+                    max_stream_candidates: 1,
+                    cache: CacheSupport::Explicit,
+                    context_tokens: 1_048_576,
+                    max_output_tokens: 8_192,
+                    streaming: true,
+                    price: Price { input: 300_000, cached_input: 30_000, output: 2_500_000 },
                 },
-            );
-            describe(&model, &bq, &dp, &cfg).await
-        }
-        None => describe(&model, &bq, &NoLineage, &cfg).await,
+                thinking_budget: Some(0),
+                endpoint: None,
+                cache: Some(ExplicitCache::default()),
+            },
+        );
+        describe_with(&model, &bq, dp.as_ref(), &cfg).await
     };
 
     let json = report::to_json(&report);
@@ -574,4 +996,263 @@ pub async fn run(a: &Options, log: &mut impl FnMut(&str)) -> Result<Report, Stri
         }
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_of(flags: &[&str]) -> Result<Options, String> {
+        parse(std::iter::once("p.d").chain(flags.iter().copied()).map(str::to_owned))
+    }
+
+    fn openai_of(flags: &[&str]) -> OpenAiOptions {
+        parse_of(flags).unwrap().openai.expect("an OpenAI-compatible model")
+    }
+
+    const BASE: [&str; 4] = ["--openai-url", "https://gw.example/v1", "--openai-model", "gpt-4o"];
+
+    #[test]
+    fn without_openai_url_the_model_is_vertex() {
+        let o = parse_of(&["--model", "gemini-2.5-pro", "--vertex-location", "europe-west4"]);
+        assert!(o.unwrap().openai.is_none());
+    }
+
+    #[test]
+    fn every_openai_option_is_parsed() {
+        let o = openai_of(&[
+            "--openai-url",
+            "https://gw.example/v1",
+            "--openai-model",
+            "local-model",
+            "--openai-key-env",
+            "GATEWAY_KEY",
+            "--openai-stream",
+            "--openai-context-tokens",
+            "32000",
+            "--openai-max-output-tokens",
+            "2048",
+            "--price-input-usd-per-mtok",
+            "0.5",
+            "--price-output-usd-per-mtok",
+            "1.25",
+        ]);
+        assert_eq!(o.url(), "https://gw.example/v1/chat/completions");
+        assert_eq!(o.key_env(), "GATEWAY_KEY");
+        assert_eq!(o.price_from(), PriceFrom::Flags);
+        let c = o.caps();
+        assert_eq!(c.id, "local-model");
+        assert!(c.streaming);
+        assert_eq!((c.context_tokens, c.max_output_tokens), (32_000, 2_048));
+        assert_eq!(c.price, Price { input: 500_000, cached_input: 500_000, output: 1_250_000 });
+        assert_eq!(o.config().model, "local-model");
+    }
+
+    #[test]
+    fn defaults_are_unary_with_stated_limits() {
+        let o = openai_of(&BASE);
+        assert_eq!(o.key_env(), DEFAULT_KEY_ENV);
+        let c = o.caps();
+        assert!(!c.streaming, "unary unless --openai-stream");
+        assert_eq!((c.context_tokens, c.max_output_tokens), (128_000, 16_384));
+        assert_eq!(
+            c.constraints,
+            ConstraintSupport { lark: false, gbnf: false, json_schema: true }
+        );
+        assert_eq!((c.max_candidates, c.max_stream_candidates), (8, 1));
+        assert_eq!(c.cache, CacheSupport::None);
+        assert_eq!(o.config().extra, None);
+    }
+
+    #[test]
+    fn chat_completions_is_appended_once() {
+        for (base, url) in [
+            ("https://h/v1", "https://h/v1/chat/completions"),
+            ("https://h/v1/", "https://h/v1/chat/completions"),
+            ("https://h/v1/chat/completions", "https://h/v1/chat/completions"),
+            ("https://h:8443", "https://h:8443/chat/completions"),
+            ("http://127.0.0.1:9/v1", "http://127.0.0.1:9/v1/chat/completions"),
+            ("http://localhost:9/v1", "http://localhost:9/v1/chat/completions"),
+        ] {
+            assert_eq!(chat_url(base).as_deref(), Ok(url), "{base}");
+        }
+    }
+
+    #[test]
+    fn unsafe_or_malformed_urls_are_refused_without_being_repeated() {
+        for (base, why) in [
+            ("https://user:hunter2@h/v1", "credentials"),
+            ("https://hunter2@h/v1", "credentials"),
+            ("https://h/v1?api-key=hunter2", "query"),
+            ("https://h/v1#hunter2", "query"),
+            ("http://h.example/v1", "loopback"),
+            ("http://127.0.0.1.hunter2.example/v1", "loopback"),
+            ("ftp://h/v1", "https://"),
+            ("https:///v1", "no host"),
+            ("https://h/v1 hunter2", "whitespace"),
+        ] {
+            let e = chat_url(base).unwrap_err();
+            assert!(e.contains(why) && !e.contains("hunter2"), "{base}: {e}");
+            let e = parse_of(&["--openai-url", base, "--openai-model", "gpt-4o"]).unwrap_err();
+            assert!(e.contains(why) && !e.contains("hunter2"), "{base}: {e}");
+        }
+    }
+
+    #[test]
+    fn openai_options_without_openai_url_are_refused() {
+        for flags in [
+            &["--openai-model", "m"][..],
+            &["--openai-key-env", "K"],
+            &["--openai-stream"],
+            &["--openai-context-tokens", "1"],
+            &["--openai-max-output-tokens", "1"],
+            &["--price-input-usd-per-mtok", "1"],
+            &["--price-output-usd-per-mtok", "1"],
+        ] {
+            let e = parse_of(flags).unwrap_err();
+            assert!(e.starts_with(flags[0]) && e.contains("goes with --openai-url"), "{e}");
+            assert!(!e.contains('\n'), "one line: {e}");
+        }
+    }
+
+    #[test]
+    fn vertex_options_beside_openai_url_are_refused() {
+        for flags in [
+            &["--vertex-project", "p"][..],
+            &["--vertex-location", "us-east1"],
+            &["--model", "gemini-2.5-pro"],
+        ] {
+            let e = parse_of(&[&BASE[..], flags].concat()).unwrap_err();
+            assert!(e.starts_with(flags[0]) && e.contains("--openai-url"), "{e}");
+            assert!(!e.contains('\n'), "one line: {e}");
+        }
+    }
+
+    #[test]
+    fn openai_url_needs_a_model() {
+        let e = parse_of(&["--openai-url", "https://h/v1"]).unwrap_err();
+        assert!(e.contains("--openai-model"), "{e}");
+        let e = parse_of(&["--openai-url", "https://h/v1", "--openai-model", " "]).unwrap_err();
+        assert!(e.contains("--openai-model"), "{e}");
+    }
+
+    #[test]
+    fn the_key_is_never_an_option_and_never_echoed() {
+        let secret = "sk-test-0123456789abcdef";
+        for flags in [
+            vec!["--openai-key".to_owned(), secret.to_owned()],
+            vec![format!("--openai-key={secret}")],
+        ] {
+            let mut all: Vec<String> = BASE.iter().map(|s| (*s).to_owned()).collect();
+            all.extend(flags);
+            let e = parse(std::iter::once("p.d".to_owned()).chain(all)).unwrap_err();
+            assert!(e.contains("--openai-key-env") && !e.contains(secret), "{e}");
+        }
+        // A key passed where its variable's name belongs is refused unrepeated.
+        for v in [secret, "lower_case", "1ABC", "", "A-B"] {
+            let e = parse_of(&[&BASE[..], &["--openai-key-env", v]].concat()).unwrap_err();
+            assert!(e.contains("NAME") && (v.is_empty() || !e.contains(v)), "{v}: {e}");
+        }
+        assert!(!USAGE.contains("sk-"));
+    }
+
+    #[test]
+    fn the_key_comes_from_the_named_variable_and_only_its_name_is_reported() {
+        let secret = "sk-test-0123456789abcdef";
+        let var = "CRAB_TEST_KEY";
+        assert_eq!(api_key(var, Some(secret.into())).as_deref(), Ok(secret));
+        assert_eq!(api_key(var, Some(format!("{secret}\n").into())).as_deref(), Ok(secret));
+        for value in [None, Some(String::new()), Some("  \n".into())] {
+            let e = api_key(var, value.map(Into::into)).unwrap_err();
+            assert!(e.starts_with(var), "{e}");
+        }
+        for bad in [format!("{secret} x"), format!("{secret}\u{7}")] {
+            let e = api_key(var, Some(bad.into())).unwrap_err();
+            assert!(e.starts_with(var) && !e.contains(secret), "{e}");
+        }
+        // Through the environment: an unset variable fails the connection,
+        // naming the variable (setting one is left to the integration tests,
+        // which do it once before any thread reads the environment).
+        let name = format!("CRAB_UNIT_UNSET_KEY_{}", std::process::id());
+        let o = openai_of(&[&BASE[..], &["--openai-key-env", &name]].concat());
+        let e = o.connect().unwrap_err();
+        assert!(e.starts_with(&name), "{e}");
+        let m = o.connect_with(Some(secret.into())).unwrap();
+        assert_eq!(m.caps().id, "gpt-4o");
+        assert!(!format!("{m:?}").contains(secret), "the client's debug form redacts the key");
+        assert!(!format!("{o:?}").contains(secret) && !o.summary().contains(secret));
+    }
+
+    #[test]
+    fn price_given_known_or_refused() {
+        // Given: both flags, cached input charged in full.
+        let o = openai_of(&[
+            "--openai-url",
+            "https://h/v1",
+            "--openai-model",
+            "gpt-4o",
+            "--price-input-usd-per-mtok",
+            "3",
+            "--price-output-usd-per-mtok",
+            "12.5",
+        ]);
+        assert_eq!(o.price_from(), PriceFrom::Flags);
+        assert_eq!(
+            o.caps().price,
+            Price { input: 3_000_000, cached_input: 3_000_000, output: 12_500_000 }
+        );
+        assert!(o.summary().contains("given"), "{}", o.summary());
+        // Known: the list price, and the run log says so.
+        let o = openai_of(&BASE);
+        assert_eq!(o.price_from(), PriceFrom::ListPrice);
+        assert_eq!(
+            o.caps().price,
+            Price { input: 2_500_000, cached_input: 1_250_000, output: 10_000_000 }
+        );
+        let line = o.summary();
+        assert!(
+            line.contains("public list price of gpt-4o")
+                && line.contains("$2.5000 input / $10.0000 output")
+                && line.contains("unary")
+                && line.contains("gw.example")
+                && !line.contains("/v1"),
+            "{line}"
+        );
+        // Unknown (a dated or prefixed name is not assumed): refused.
+        for model in ["gpt-4o-2024-05-13", "openai/gpt-4o", "llama-3"] {
+            let e =
+                parse_of(&["--openai-url", "https://h/v1", "--openai-model", model]).unwrap_err();
+            assert!(
+                e.contains("--budget-usd cannot be enforced")
+                    && e.contains("--price-input-usd-per-mtok")
+                    && e.contains("--price-output-usd-per-mtok"),
+                "{e}"
+            );
+        }
+        // Half a price, or a value that is no price, is refused.
+        let e = parse_of(&[&BASE[..], &["--price-input-usd-per-mtok", "1"]].concat()).unwrap_err();
+        assert!(e.contains("go together"), "{e}");
+        for v in ["-1", "NaN", "inf", "1e7", "cheap"] {
+            let e =
+                parse_of(&[&BASE[..], &["--price-input-usd-per-mtok", v]].concat()).unwrap_err();
+            assert!(e.starts_with("--price-input-usd-per-mtok"), "{v}: {e}");
+        }
+        let zero = openai_of(
+            &[&BASE[..], &["--price-input-usd-per-mtok", "0", "--price-output-usd-per-mtok", "0"]]
+                .concat(),
+        );
+        assert_eq!(zero.caps().price, Price::default());
+    }
+
+    #[test]
+    fn limits_must_be_positive_numbers() {
+        for flags in [
+            &["--openai-context-tokens", "0"][..],
+            &["--openai-max-output-tokens", "0"],
+            &["--openai-context-tokens", "many"],
+            &["--openai-max-output-tokens", "-1"],
+        ] {
+            assert!(parse_of(&[&BASE[..], flags].concat()).is_err(), "{flags:?}");
+        }
+    }
 }

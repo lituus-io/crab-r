@@ -1,4 +1,4 @@
-# Author: support@lituus.io
+# Author: spicyzhug@gmail.com
 # Copyright: lituus-io, all rights reserved
 
 # Dependency policy: the only third-party crates [dependencies] may name are
@@ -8,7 +8,7 @@
 
 [package]
 name = "uu-crab-r"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"
@@ -41,17 +41,18 @@ openai = ["objstore-r/http"]
 # Dataplex lineage (Data Lineage API).
 dataplex = ["objstore-r/http"]
 # The `crab-describe` command and `describe::app`: BigQuery, Vertex AI and
-# Dataplex over ADC, a blocking runtime, and store publishing to Cloud
-# Storage through objstore-r's graph-r mirror.
-cli = ["http", "vertex", "dataplex", "objstore-r/blocking", "objstore-r/gcs", "objstore-r/mirror"]
+# Dataplex over ADC, an OpenAI-compatible model as the alternative to Vertex
+# AI, a blocking runtime, and store publishing to Cloud Storage through
+# objstore-r's graph-r mirror.
+cli = ["http", "vertex", "openai", "dataplex", "objstore-r/blocking", "objstore-r/gcs", "objstore-r/mirror"]
 
 [package.metadata.docs.rs]
 features = ["cli", "openai"]
 
 [dependencies]
-graph-r = { package = "uu-graph-r", path = "../graph-r", version = "0.4.0", default-features = false, features = ["store"] }
+graph-r = { package = "uu-graph-r", path = "../graph-r", version = "0.4.2", default-features = false, features = ["store"] }
 link-r = { package = "uu-link-r", path = "../link-r", version = "0.4.0", default-features = false }
-objstore-r = { package = "uu-objstore-r", path = "../objstore-r", version = "0.2.0" }
+objstore-r = { package = "uu-objstore-r", path = "../objstore-r", version = "0.2.3" }
 
 [dev-dependencies]
 proptest = "1.5"

@@ -1,4 +1,4 @@
-// Author: support@lituus.io
+// Author: spicyzhug@gmail.com
 // Copyright: lituus-io, all rights reserved
 //
 //! # `describe`
@@ -36,6 +36,7 @@ pub mod checks;
 pub mod describe;
 pub mod generate;
 pub mod incremental;
+pub mod ingest;
 pub mod producers;
 pub mod report;
 pub mod splice;

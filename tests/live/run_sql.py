@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Author: support@lituus.io
+# Author: spicyzhug@gmail.com
 # Copyright: lituus-io, all rights reserved
 """Run a `-- job`-delimited SQL file against BigQuery, one query job per
 block, with Application Default Credentials (via gcloud).

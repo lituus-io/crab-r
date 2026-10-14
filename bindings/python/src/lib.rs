@@ -1,4 +1,4 @@
-// Author: support@lituus.io
+// Author: spicyzhug@gmail.com
 // Copyright: lituus-io, all rights reserved
 //
 //! `crab_r`: the `crab-describe` command as a Python module.
@@ -144,6 +144,59 @@ fn due(py: Python<'_>, store: String, n: usize) -> PyResult<String> {
     look(py, "due", vec![store, n.to_string()])
 }
 
+/// Write a static lineage export's `nodes` and `edges` (lists of dicts, as
+/// the export has them) into `store`, created when absent, so lookups answer
+/// for the declared tables with no network and a later `describe` enriches
+/// the same nodes. Adds only; one commit or none. Returns
+/// `{"committed", "created", "updated", "edges", "skipped": {name: n},
+/// "rejected": [{"side", "index", "reason"}]}`.
+#[pyfunction]
+fn ingest_lineage<'py>(
+    py: Python<'py>,
+    store: String,
+    nodes: &Bound<'py, PyAny>,
+    edges: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let json = py.import("json")?;
+    let text = |v: &Bound<'py, PyAny>, what: &str| -> PyResult<String> {
+        json.call_method1("dumps", (v,))
+            .and_then(|s| s.extract())
+            .map_err(|_| pyo3::exceptions::PyTypeError::new_err(format!("{what}: not JSON data")))
+    };
+    let (nodes, edges) = (text(nodes, "nodes")?, text(edges, "edges")?);
+    let done = py
+        .detach(|| crab::describe::ingest::ingest_dir(&store, &nodes, &edges))
+        .map_err(CrabError::new_err)?;
+    json.call_method1("loads", (done.to_json(),))
+}
+
+fn name(s: &str) -> PyResult<crab::base::key::BqName<'_>> {
+    crab::base::key::BqName::parse(s)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+/// A BigQuery name, given in any spelling, as a lineage export's id:
+/// `bq://project/dataset/table#column`.
+#[pyfunction]
+fn bq_id(s: &str) -> PyResult<String> {
+    Ok(name(s)?.bq_id())
+}
+
+/// A BigQuery name, given in any spelling, in the path form
+/// `bq://project/dataset/table/column`: the key for a document store that
+/// drops a url's `#fragment`.
+#[pyfunction]
+fn bq_path(s: &str) -> PyResult<String> {
+    Ok(name(s)?.bq_path())
+}
+
+/// A BigQuery name, given in any spelling, as the warehouse spells it:
+/// `project.dataset.table.column`.
+#[pyfunction]
+fn dotted(s: &str) -> PyResult<String> {
+    Ok(name(s)?.dotted())
+}
+
 /// Fetch a published store (`gs://bucket/prefix` or a directory) into
 /// `directory`, or bring it up to date with only what changed.
 #[pyfunction]
@@ -162,6 +215,10 @@ fn crab_r(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(downstream, m)?)?;
     m.add_function(wrap_pyfunction!(due, m)?)?;
     m.add_function(wrap_pyfunction!(pull, m)?)?;
+    m.add_function(wrap_pyfunction!(ingest_lineage, m)?)?;
+    m.add_function(wrap_pyfunction!(bq_id, m)?)?;
+    m.add_function(wrap_pyfunction!(bq_path, m)?)?;
+    m.add_function(wrap_pyfunction!(dotted, m)?)?;
     m.add("CrabError", m.py().get_type::<CrabError>())?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

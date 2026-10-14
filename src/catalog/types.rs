@@ -1,4 +1,4 @@
-// Author: support@lituus.io
+// Author: spicyzhug@gmail.com
 // Copyright: lituus-io, all rights reserved
 //
 //! BigQuery column types as reported by INFORMATION_SCHEMA (`INT64`,
