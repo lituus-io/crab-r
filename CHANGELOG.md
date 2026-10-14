@@ -4,6 +4,15 @@ All notable changes to crab-r are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.3
+
+- Fixed: `ingest_lineage` kept the promise that a repeat of the same export
+  writes nothing, except for a column derived from itself (`SET c = f(c)`,
+  or one column named in both the `#c` and the path spelling). The store
+  keeps no edge from a node to itself, so the staged edge never read back
+  and every repeat committed it again. A self-derivation is now skipped
+  when the plan is built: it adds no lineage.
+
 ## 0.2.2
 
 - **Built on uu-graph-r 0.4.2 and uu-objstore-r 0.2.3.** The store core this crate

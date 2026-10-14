@@ -139,6 +139,27 @@ fn a_repeat_ingest_commits_nothing() {
     assert!(!ingest(&store, "[]", EDGES, 3).unwrap().committed);
 }
 
+#[test]
+fn a_self_derivation_is_skipped_and_a_repeat_commits_nothing() {
+    // A column written from itself (`SET c = f(c)`), here in the export's
+    // `#c` spelling and the path spelling, which name one node. The store
+    // keeps no edge from a node to itself, so staging one would commit it
+    // again on every repeat.
+    let d = dir("self");
+    let e = r#"[{"relationship":"column_derives_from","source_id":"bq://p/dd/t/C","target_id":"bq://p/dd/t#C"}]"#;
+    assert!(ingest_dir(&s(&d), "[]", e).unwrap().committed);
+    let col = column_key("p", "dd", "t", "C");
+    let store = Store::open(&d).unwrap();
+    assert!(derives(&store.snapshot(), col).is_empty());
+    drop(store);
+    let wal = wal_len(&d);
+    let store = Store::open(&d).unwrap();
+    let again = ingest(&store, "[]", e, 2).unwrap();
+    assert!(!again.committed, "a repeat ingest wrote: {again:?}");
+    drop(store);
+    assert_eq!(wal_len(&d), wal, "a repeat ingest appended to the log");
+}
+
 fn column(name: &str, sources: &[&str], description: &str) -> ColumnReport {
     ColumnReport {
         column: name.into(),
