@@ -4,6 +4,26 @@ All notable changes to crab-r are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.1
+
+- **Built on uu-graph-r 0.5.1**, whose commit lock is fair: a writer
+  committing back to back no longer starves the others. Beside a busy
+  writer, a describe save or a lineage ingest could otherwise wait seconds
+  and be refused with `Locked` after spending its model budget.
+- Fixed: a save cut short (a crash or power cut mid-append keeps a prefix of
+  the transaction's log frames) could leave a table offered for reuse as a
+  mixture of two runs: the new table record with the old key and the old
+  columns. The next describe trusted it and the missing columns never came
+  back. A table's key, which is what makes its record reusable, is now
+  written last, and an earlier record loses its key first, so a cut anywhere
+  leaves the previous complete record or none, and the next run re-describes
+  it.
+- New tests: a save and an ingest cut at every frame boundary and inside
+  every frame read cleanly, never offer a partial record, and heal to
+  exactly the uninterrupted store; separate processes saving, ingesting and
+  reading through forced compactions lose nothing; writers killed mid-run
+  cost the others nothing. All fail on the 0.2.x write paths.
+
 ## 0.3.0
 
 - **Built on uu-graph-r 0.5.0, uu-link-r 0.4.2 and uu-objstore-r 0.2.4.** The
