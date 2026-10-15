@@ -195,8 +195,7 @@ fn save_table(
     turl: &str,
     now: u64,
 ) -> graph_r::Result<()> {
-    let tkey = upsert(w, turl, &t.table, t.description.as_deref(), t.prekey, now)?;
-    written.insert(tkey);
+    let tkey = UrlKey::of(turl);
     let key_hex = t.key.map(|k| format!("{k:016x}"));
     let grain = t.grain.join("\n");
     let checks = crate::describe::report::checks_json(t);
@@ -211,9 +210,6 @@ fn save_table(
         attrs.push((attr::STATEMENT, &p.statement_type));
         attrs.push((attr::SQL, &p.query));
     }
-    if let Some(k) = &key_hex {
-        attrs.push((attr::KEY, k));
-    }
     if let Some(e) = &t.existing {
         attrs.push((attr::EXISTING, e));
     }
@@ -221,7 +217,15 @@ fn save_table(
     if let Some(m) = table_mark {
         attrs.push((attr::STATIC, m));
     }
-    w.set_attrs(tkey, &attrs)?;
+    // `load` offers a table for reuse once its key is set, so the key is
+    // written last and an earlier record of this table loses its key first:
+    // a save cut short anywhere (a prefix of this transaction's log frames
+    // survives a crash) leaves the previous complete record or none.
+    if snap.attr(tkey, attr::KEY).is_some() {
+        w.set_attrs(tkey, &attrs)?;
+    }
+    upsert(w, turl, &t.table, t.description.as_deref(), t.prekey, now)?;
+    written.insert(tkey);
 
     let mut table_edges = Vec::new();
     for c in &t.columns {
@@ -294,7 +298,10 @@ fn save_table(
         table_edges.extend(d.into_iter().map(|(k, t, w, _)| (k, t, w)));
     }
     w.set_edges(tkey, &table_edges);
-    Ok(())
+    if let Some(k) = &key_hex {
+        attrs.push((attr::KEY, k));
+    }
+    w.set_attrs(tkey, &attrs)
 }
 
 /// A static node's recorded `Derives` edges the traced set lacks: a
