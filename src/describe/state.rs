@@ -27,7 +27,7 @@ use crate::describe::describe::{Action, Report, TableReport};
 use crate::describe::incremental::{Prior, PriorColumn, PriorTable};
 use crate::lineage::Column;
 use graph_r::format::base::eflags::EXACT;
-use graph_r::{DocRecord, EdgeType, Outcome, Snapshot, Store, Touch, UrlKey, Writer};
+use graph_r::{DocRecord, EdgeType, Outcome, Snapshot, Store, Touch, Txn, UrlKey};
 use std::collections::{BTreeSet, HashSet};
 
 /// Attribute keys of the describe state.
@@ -84,7 +84,7 @@ fn column_uri(uri: &mut UriBuf, c: &Column) -> Option<String> {
 }
 
 fn upsert(
-    w: &mut Writer<'_>,
+    w: &mut Txn<'_>,
     url: &str,
     title: &str,
     snippet: Option<&str>,
@@ -120,67 +120,74 @@ fn edges_of(snap: &Snapshot<'_>, key: UrlKey, etype: EdgeType) -> Vec<UrlKey> {
 /// Record `report` in `store`: re-described tables in full, reused ones as a
 /// freshness touch. Tables a run did not cover (an unreadable dataset) keep
 /// what an earlier run recorded.
+///
+/// One transaction: the recorded hierarchy this unions with is read under the
+/// store's commit lock, so a concurrent save into the same store (another
+/// process, another handle) is built on, never overwritten.
 pub fn save(store: &Store, report: &Report, now_ms: u64) -> graph_r::Result<()> {
-    let mut uri = UriBuf::new();
-    let snap = store.snapshot();
-    let mut w = store.writer()?;
-    // Hierarchy: root → datasets → tables, unioned with what is recorded.
-    // Nodes written in this batch: lineage endpoints never re-upsert them.
-    let mut written: HashSet<UrlKey> = HashSet::new();
-    let root = UrlKey::of(ROOT);
-    if snap.node(root).is_none() {
-        upsert(&mut w, ROOT, "bigquery", None, 0, now_ms)?;
-    }
-    let mut datasets: BTreeSet<(String, String)> = BTreeSet::new();
-    for t in &report.tables {
-        if let Some((p, d, _)) = crate::base::key::split_fqn(&t.table) {
-            datasets.insert((p.to_owned(), d.to_owned()));
+    store.transact(|w| {
+        let mut uri = UriBuf::new();
+        // The transaction's caught-up view (what `w.snapshot()` returns), taken
+        // from the store so staging through `w` can borrow it mutably.
+        let snap = store.snapshot();
+        // Hierarchy: root → datasets → tables, unioned with what is recorded.
+        // Nodes written in this batch: lineage endpoints never re-upsert them.
+        let mut written: HashSet<UrlKey> = HashSet::new();
+        let root = UrlKey::of(ROOT);
+        if snap.node(root).is_none() {
+            upsert(w, ROOT, "bigquery", None, 0, now_ms)?;
         }
-    }
-    let mut root_edges: BTreeSet<UrlKey> =
-        edges_of(&snap, root, EdgeType::Contains).into_iter().collect();
-    for (p, d) in &datasets {
-        let url = uri.dataset(p, d).to_owned();
-        let key = UrlKey::of(&url);
-        if snap.node(key).is_none() {
-            upsert(&mut w, &url, &format!("{p}.{d}"), None, 0, now_ms)?;
-        }
-        root_edges.insert(key);
-        let mut tables: BTreeSet<UrlKey> =
-            edges_of(&snap, key, EdgeType::Contains).into_iter().collect();
-        for t in report.tables.iter().filter(|t| {
-            crate::base::key::split_fqn(&t.table).is_some_and(|(tp, td, _)| tp == p && td == d)
-        }) {
-            if let Some(u) = table_uri(&mut uri, &t.table) {
-                tables.insert(UrlKey::of(&u));
+        let mut datasets: BTreeSet<(String, String)> = BTreeSet::new();
+        for t in &report.tables {
+            if let Some((p, d, _)) = crate::base::key::split_fqn(&t.table) {
+                datasets.insert((p.to_owned(), d.to_owned()));
             }
         }
-        let tables: Vec<_> = tables.into_iter().map(|k| (k, EdgeType::Contains, 1)).collect();
-        w.set_edges(key, &tables);
-    }
-    let root_edges: Vec<_> = root_edges.into_iter().map(|k| (k, EdgeType::Contains, 1)).collect();
-    w.set_edges(root, &root_edges);
-
-    for t in &report.tables {
-        let Some(turl) = table_uri(&mut uri, &t.table) else { continue };
-        let tkey = UrlKey::of(&turl);
-        if t.reused && snap.node(tkey).is_some() {
-            touch(&mut w, tkey, Outcome::Unchanged, now_ms)?;
-            continue;
+        let mut root_edges: BTreeSet<UrlKey> =
+            edges_of(&snap, root, EdgeType::Contains).into_iter().collect();
+        for (p, d) in &datasets {
+            let url = uri.dataset(p, d).to_owned();
+            let key = UrlKey::of(&url);
+            if snap.node(key).is_none() {
+                upsert(w, &url, &format!("{p}.{d}"), None, 0, now_ms)?;
+            }
+            root_edges.insert(key);
+            let mut tables: BTreeSet<UrlKey> =
+                edges_of(&snap, key, EdgeType::Contains).into_iter().collect();
+            for t in report.tables.iter().filter(|t| {
+                crate::base::key::split_fqn(&t.table).is_some_and(|(tp, td, _)| tp == p && td == d)
+            }) {
+                if let Some(u) = table_uri(&mut uri, &t.table) {
+                    tables.insert(UrlKey::of(&u));
+                }
+            }
+            let tables: Vec<_> = tables.into_iter().map(|k| (k, EdgeType::Contains, 1)).collect();
+            w.set_edges(key, &tables);
         }
-        save_table(&mut w, &snap, &mut uri, &mut written, t, &turl, now_ms)?;
-        touch(&mut w, tkey, Outcome::Changed, now_ms)?;
-    }
-    w.commit()?;
-    Ok(())
+        let root_edges: Vec<_> =
+            root_edges.into_iter().map(|k| (k, EdgeType::Contains, 1)).collect();
+        w.set_edges(root, &root_edges);
+
+        for t in &report.tables {
+            let Some(turl) = table_uri(&mut uri, &t.table) else { continue };
+            let tkey = UrlKey::of(&turl);
+            if t.reused && snap.node(tkey).is_some() {
+                touch(w, tkey, Outcome::Unchanged, now_ms)?;
+                continue;
+            }
+            save_table(w, &snap, &mut uri, &mut written, t, &turl, now_ms)?;
+            touch(w, tkey, Outcome::Changed, now_ms)?;
+        }
+        Ok(())
+    })
 }
 
-fn touch(w: &mut Writer<'_>, key: UrlKey, outcome: Outcome, now: u64) -> graph_r::Result<()> {
+fn touch(w: &mut Txn<'_>, key: UrlKey, outcome: Outcome, now: u64) -> graph_r::Result<()> {
     w.touch(key, Touch { checked_at_ms: now, outcome, content_hash: None, etag: None }).map(|_| ())
 }
 
 fn save_table(
-    w: &mut Writer<'_>,
+    w: &mut Txn<'_>,
     snap: &Snapshot<'_>,
     uri: &mut UriBuf,
     written: &mut HashSet<UrlKey>,
@@ -306,7 +313,7 @@ fn declared(snap: &Snapshot<'_>, key: UrlKey, edges: &mut Vec<(UrlKey, EdgeType,
 /// The node of a column known only through lineage (outside the described
 /// tables): created with its name so lookups can show it.
 fn external(
-    w: &mut Writer<'_>,
+    w: &mut Txn<'_>,
     snap: &Snapshot<'_>,
     uri: &mut UriBuf,
     written: &mut HashSet<UrlKey>,

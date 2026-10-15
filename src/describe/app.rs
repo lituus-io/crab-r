@@ -862,15 +862,10 @@ pub async fn run(a: &Options, log: &mut impl FnMut(&str)) -> Result<Report, Stri
     cfg.budget =
         crate::base::Budget::new(50_000_000, 200 << 30, (a.budget_usd * 1e6) as u64, 6 * 3_600_000);
     let store = match &a.store {
-        Some(dir) => {
-            let exists = std::path::Path::new(dir).join(graph_r::store::BASE_FILE).exists();
-            let s = if exists {
-                graph_r::Store::open(dir)
-            } else {
-                graph_r::Store::create(dir, graph_r::Config::default())
-            };
-            Some(s.map_err(|e| format!("{dir}: {e}"))?)
-        }
+        Some(dir) => Some(
+            graph_r::Store::open_or_create(dir, graph_r::Config::default())
+                .map_err(|e| format!("{dir}: {e}"))?,
+        ),
         None => None,
     };
     if let Some(s) = &store {
