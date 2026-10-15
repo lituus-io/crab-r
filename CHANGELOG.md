@@ -4,6 +4,23 @@ All notable changes to crab-r are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.0
+
+- **Built on uu-graph-r 0.5.0, uu-link-r 0.4.2 and uu-objstore-r 0.2.4.** The
+  embedded store core takes its writer lock per commit instead of for a
+  writable handle's life, so several processes can write one describe store
+  at once. The public API names graph-r 0.5 types, hence the minor bump.
+- Fixed for that: a describe's save and a static-lineage ingest each read the
+  store, then replaced whole containment edge sets from what they read. With
+  writers no longer excluded, a writer whose view predated another's commit
+  overwrote it: eight concurrent saves into three datasets left one dataset
+  linked. Both now run as one graph-r transaction, reading under the commit
+  lock, so a concurrent writer is built on, never overwritten. A save or
+  ingest with nothing new still writes nothing.
+- A store is opened with graph-r's race-safe `open_or_create`; checking for
+  the base file and then creating it let one of several racing creators lose
+  its first save.
+
 ## 0.2.3
 
 - Fixed: `ingest_lineage` kept the promise that a repeat of the same export

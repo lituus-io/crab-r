@@ -460,46 +460,47 @@ enum Op<'p> {
     Edges(UrlKey, Vec<(UrlKey, EdgeType, u16, u8)>),
 }
 
+/// Diff `plan` against the store and commit the difference, as one
+/// transaction: the diff reads state under the store's commit lock, so a
+/// concurrent ingest into the same store is diffed against, never clobbered
+/// (edge sets are whole-set replacements). Nothing new: nothing is written.
 fn apply(store: &Store, plan: &Plan, out: &mut Ingested, now: u64) -> graph_r::Result<()> {
-    let ops = {
-        let snap = store.snapshot();
-        diff(&snap, plan, out)?
-    };
-    if ops.is_empty() {
-        return Ok(());
-    }
-    let mut w = store.writer()?;
-    for op in &ops {
-        match op {
-            Op::Root => w.upsert_node(&DocRecord {
-                url: ROOT,
-                url_key: UrlKey::of(ROOT),
-                content_hash: 0,
-                fetched_at_ms: now,
-                title: Some("bigquery"),
-                snippet: None,
-                etag: None,
-                pinned: false,
-            })?,
-            Op::Node(n) => w.upsert_node(&DocRecord {
-                url: &n.url,
-                url_key: UrlKey::of(&n.url),
-                content_hash: 0,
-                fetched_at_ms: now,
-                title: Some(&n.title),
-                snippet: None,
-                etag: None,
-                pinned: false,
-            })?,
-            Op::Attrs(key, attrs) => {
-                let attrs: Vec<(u8, &str)> = attrs.iter().map(|(k, v)| (*k, v.as_str())).collect();
-                w.set_attrs(*key, &attrs)?;
+    out.committed = store.transact(|w| {
+        // The transaction's caught-up view (what `w.snapshot()` returns), taken
+        // from the store so staging through `w` can borrow it mutably.
+        let ops = diff(&store.snapshot(), plan, out)?;
+        for op in &ops {
+            match op {
+                Op::Root => w.upsert_node(&DocRecord {
+                    url: ROOT,
+                    url_key: UrlKey::of(ROOT),
+                    content_hash: 0,
+                    fetched_at_ms: now,
+                    title: Some("bigquery"),
+                    snippet: None,
+                    etag: None,
+                    pinned: false,
+                })?,
+                Op::Node(n) => w.upsert_node(&DocRecord {
+                    url: &n.url,
+                    url_key: UrlKey::of(&n.url),
+                    content_hash: 0,
+                    fetched_at_ms: now,
+                    title: Some(&n.title),
+                    snippet: None,
+                    etag: None,
+                    pinned: false,
+                })?,
+                Op::Attrs(key, attrs) => {
+                    let attrs: Vec<(u8, &str)> =
+                        attrs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                    w.set_attrs(*key, &attrs)?;
+                }
+                Op::Edges(key, edges) => w.set_edges_with_flags(*key, edges),
             }
-            Op::Edges(key, edges) => w.set_edges_with_flags(*key, edges),
         }
-    }
-    w.commit()?;
-    out.committed = true;
+        Ok(!ops.is_empty())
+    })?;
     Ok(())
 }
 
@@ -577,10 +578,8 @@ fn diff<'p>(
 
 /// [`ingest`] into the store at `dir`, created when absent.
 pub fn ingest_dir(dir: &str, nodes_json: &str, edges_json: &str) -> Result<Ingested, String> {
-    let exists = std::path::Path::new(dir).join(graph_r::store::BASE_FILE).exists();
-    let store =
-        if exists { Store::open(dir) } else { Store::create(dir, graph_r::Config::default()) }
-            .map_err(|e| format!("{dir}: {e}"))?;
+    let store = Store::open_or_create(dir, graph_r::Config::default())
+        .map_err(|e| format!("{dir}: {e}"))?;
     ingest(&store, nodes_json, edges_json, graph_r::fsio::now_ms())
 }
 

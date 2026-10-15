@@ -8,7 +8,7 @@
 
 [package]
 name = "uu-crab-r"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"
@@ -50,9 +50,9 @@ cli = ["http", "vertex", "openai", "dataplex", "objstore-r/blocking", "objstore-
 features = ["cli", "openai"]
 
 [dependencies]
-graph-r = { package = "uu-graph-r", path = "../graph-r", version = "0.4.2", default-features = false, features = ["store"] }
-link-r = { package = "uu-link-r", path = "../link-r", version = "0.4.0", default-features = false }
-objstore-r = { package = "uu-objstore-r", path = "../objstore-r", version = "0.2.3" }
+graph-r = { package = "uu-graph-r", path = "../graph-r", version = "0.5.0", default-features = false, features = ["store"] }
+link-r = { package = "uu-link-r", path = "../link-r", version = "0.4.2", default-features = false }
+objstore-r = { package = "uu-objstore-r", path = "../objstore-r", version = "0.2.4" }
 
 [dev-dependencies]
 proptest = "1.5"
