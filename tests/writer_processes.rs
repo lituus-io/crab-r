@@ -15,6 +15,7 @@ use crab_r::describe::state;
 use crab_r::lineage::Column;
 use graph_r::{Config, Error, Store};
 use std::io::Write as _;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -26,6 +27,9 @@ const EDGES: &str = include_str!("data/static_lineage/edges.json");
 /// The export declares `proj.mart`; saves land there too, so a save and an
 /// ingest replace the same containment set.
 const DATASETS: [&str; 3] = ["mart", "d1", "d2"];
+/// A writer child stops by itself after this long, so one the parent never
+/// got to kill (a failed assertion unwound it first) cannot run on.
+const CHILD_DEADLINE: Duration = Duration::from_secs(120);
 
 fn dir(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("crab-wp-{name}-{}", std::process::id()));
@@ -89,14 +93,42 @@ fn report(name: &str, key: u64) -> Report {
     }
 }
 
-fn spawn(role: &str, args: &[String]) -> Child {
-    Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "child", "--nocapture", "--test-threads=1"])
-        .env(ROLE, role)
-        .env(ARGS, args.join("\n"))
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap()
+/// A child process that is killed and reaped when dropped while still
+/// running: a parent that panics never leaves a writer behind.
+struct Reaped(Child);
+
+impl Deref for Reaped {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl DerefMut for Reaped {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(None)) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
+fn spawn(role: &str, args: &[String]) -> Reaped {
+    Reaped(
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "child", "--nocapture", "--test-threads=1"])
+            .env(ROLE, role)
+            .env(ARGS, args.join("\n"))
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    )
 }
 
 fn wait_for(path: &Path) {
@@ -119,7 +151,7 @@ fn go_when_ready(d: &Path, ids: &[String]) {
     std::fs::write(d.join("go"), b"").unwrap();
 }
 
-fn succeeded(c: &mut Child, what: &str) {
+fn succeeded(c: &mut Reaped, what: &str) {
     let status = c.wait().unwrap();
     assert!(status.success(), "{what} failed: {status}");
 }
@@ -165,7 +197,11 @@ fn child() {
                 .append(true)
                 .open(d.join(format!("saved.{id}")))
                 .unwrap();
+            let started = Instant::now();
             for k in 0..m {
+                if started.elapsed() > CHILD_DEADLINE {
+                    break;
+                }
                 let name = table_name(id, k);
                 state::save(&store, &report(&name, (id * 10_000 + k) as u64 + 1), k as u64)
                     .unwrap();
@@ -220,7 +256,7 @@ fn processes_saving_and_ingesting_through_compactions_lose_nothing() {
     let a = |v: [String; 3]| -> Vec<String> {
         std::iter::once(d.display().to_string()).chain(v).collect()
     };
-    let mut kids: Vec<(String, Child)> = Vec::new();
+    let mut kids: Vec<(String, Reaped)> = Vec::new();
     for id in 0..WRITERS {
         kids.push((format!("w{id}"), spawn("saves", &a([id, M, EVERY].map(|x| x.to_string())))));
     }
@@ -269,9 +305,10 @@ fn killed_writers_cost_the_others_nothing() {
         vec![d.display().to_string(), id.to_string(), m.to_string(), EVERY.to_string()]
     };
     // The doomed writers never finish on their own.
-    let mut doomed: Vec<Child> =
+    let mut doomed: Vec<Reaped> =
         (SURVIVORS..SURVIVORS + KILLED).map(|id| spawn("saves", &args(id, 1_000_000))).collect();
-    let mut survivors: Vec<Child> = (0..SURVIVORS).map(|id| spawn("saves", &args(id, M))).collect();
+    let mut survivors: Vec<Reaped> =
+        (0..SURVIVORS).map(|id| spawn("saves", &args(id, M))).collect();
     let ids: Vec<String> = (0..SURVIVORS + KILLED).map(|i| format!("w{i}")).collect();
     go_when_ready(&d, &ids);
     // Kill each doomed writer once it has saved something, mid-run.
