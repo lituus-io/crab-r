@@ -256,8 +256,12 @@ fn a_locked_or_busy_store_is_never_deleted() {
     // Damaged, the lock held: a regeneration waits for it, then refuses
     // with `Locked`, deleting nothing.
     let d = populated("locked-damaged");
-    let holder = Store::open(&d).unwrap();
-    let lock = holder.commit_lock().unwrap();
+    // The lock as another writer holds it, through the lock file alone: an
+    // open store would map the base, and Windows refuses to rewrite a mapped
+    // file, so the damage below could not be planted.
+    let lock =
+        std::fs::OpenOptions::new().write(true).open(d.join(graph_r::store::LOCK_FILE)).unwrap();
+    lock.lock().unwrap();
     damage(BASE_FILE, "garbage", &d);
     let before = (bytes(&d.join(BASE_FILE)), bytes(&d.join(WAL_FILE)));
     let cfg = Config { lock_wait: Duration::from_millis(50), ..Config::default() };
