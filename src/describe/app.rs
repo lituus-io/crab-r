@@ -645,15 +645,18 @@ pub async fn pull(src: &str, dir: &str) -> Result<String, String> {
             }
         }
     }
+    // A mirror sync's state (manifest, segments, a resumable transfer) runs
+    // to tens of kilobytes: it lives on the heap for the one pull a command
+    // makes, not on the caller's stack.
     if let Some(rest) = src.strip_prefix("gs://") {
         let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
         let tokens = Adc::discover().map_err(|e| format!("credentials: {e}"))?;
         let gcs = objstore_r::Gcs::new(bucket, tokens, objstore_r::GcsConfig::default())
             .map_err(|e| format!("{src}: {e}"))?;
-        sync(&gcs, prefix, dir).await
+        Box::pin(sync(&gcs, prefix, dir)).await
     } else {
         let objects = objstore_r::LocalDir::open(src).map_err(|e| format!("{src}: {e}"))?;
-        sync(&objects, "", dir).await
+        Box::pin(sync(&objects, "", dir)).await
     }
 }
 

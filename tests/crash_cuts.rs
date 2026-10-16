@@ -1,13 +1,13 @@
 // Author: spicyzhug@gmail.com
 // Copyright: lituus-io, all rights reserved
 //
-// A save or an ingest cut short. graph-r appends a transaction's ops as
-// consecutive log frames and replays a log up to its first torn frame, so a
-// writer killed mid-append (or a power cut before the fsync lands) leaves a
-// prefix of the transaction. Cut at every frame boundary and inside every
-// frame, the store must read without error, must never present a table as a
-// reusable record unless that record is complete, and must come out
-// identical to an uninterrupted run once the same work is repeated.
+// A save or an ingest cut short. graph-r appends a transaction as one
+// checksummed log record and replays only whole records, so a writer killed
+// mid-append (or a power cut before the fsync lands) leaves the transaction
+// out entirely. Cut anywhere inside the record, the store must read without
+// error, must be exactly the store from before the transaction (no table
+// offered for reuse but a complete one), and must come out identical to an
+// uninterrupted run once the same work is repeated.
 
 #![cfg(feature = "cli")]
 
@@ -15,7 +15,7 @@ use crab_r::describe::describe::{Action, ColumnReport, Report, TableReport};
 use crab_r::describe::ingest::ingest;
 use crab_r::describe::state;
 use crab_r::lineage::Column;
-use graph_r::format::wal::{FRAME_OVERHEAD, HEADER_LEN};
+use graph_r::format::wal::{HEADER_LEN, RECORD_HEADER_LEN};
 use graph_r::store::WAL_FILE;
 use graph_r::{Config, Store};
 use std::path::{Path, PathBuf};
@@ -159,18 +159,18 @@ fn dump(store: &Store) -> Vec<String> {
     out
 }
 
-/// Byte offsets of every frame boundary in `wal` at or after `from`.
+/// Byte offsets of every record boundary in `wal` at or after `from`. A
+/// record's first four bytes are its whole length, header included.
 fn boundaries(wal: &[u8], from: usize) -> Vec<usize> {
     let mut pos = HEADER_LEN;
     let mut out = Vec::new();
-    while pos + FRAME_OVERHEAD <= wal.len() {
+    while pos + RECORD_HEADER_LEN <= wal.len() {
         if pos >= from {
             out.push(pos);
         }
-        let len = u32::from_le_bytes(wal[pos..pos + 4].try_into().unwrap()) as usize;
-        pos += FRAME_OVERHEAD + len;
+        pos += u32::from_le_bytes(wal[pos..pos + 4].try_into().unwrap()) as usize;
     }
-    assert_eq!(pos, wal.len(), "the log ends on a frame boundary");
+    assert_eq!(pos, wal.len(), "the log ends on a record boundary");
     out.push(pos);
     out
 }
@@ -189,16 +189,20 @@ fn cut(src: &Path, dst: &Path, len: usize) {
     wal.set_len(len as u64).unwrap();
 }
 
-/// Every cut point of the log `after` added to `before` bytes: each frame
-/// boundary, and a byte into each frame (a torn frame).
-fn cuts(store: &Path, before: usize) -> Vec<usize> {
+/// The transaction appended after `before` bytes is one record: its start and
+/// end, and cut points across it — every byte of its header and of its
+/// last 64 bytes, and every 61st byte between (an odd stride, so the cuts land
+/// at every alignment).
+fn cuts(store: &Path, before: usize) -> (usize, Vec<usize>) {
     let wal = std::fs::read(store.join(WAL_FILE)).unwrap();
     let b = boundaries(&wal, before);
-    assert!(b.len() > 3, "the transaction spans several frames: {b:?}");
-    let mut out = b.clone();
-    out.extend(b.iter().take(b.len() - 1).map(|&p| p + FRAME_OVERHEAD + 1));
-    out.sort_unstable();
-    out
+    assert_eq!(b.len(), 2, "the transaction is one record: {b:?}");
+    let (start, end) = (b[0], b[1]);
+    let mut out: Vec<usize> = (start..end)
+        .filter(|&p| p < start + RECORD_HEADER_LEN || p + 64 >= end || (p - start) % 61 == 0)
+        .collect();
+    out.push(end);
+    (end, out)
 }
 
 fn wal_len(store: &Path) -> usize {
@@ -212,6 +216,7 @@ fn a_save_cut_anywhere_never_offers_a_partial_record_and_heals() {
     ingest(&store, NODES, EDGES, 1).unwrap();
     state::save(&store, &first(), 2).unwrap();
     let before = state::load(&store);
+    let unsaved = dump(&store);
     let mark = wal_len(&base);
     state::save(&store, &second(), 3).unwrap();
     let after = state::load(&store);
@@ -220,11 +225,19 @@ fn a_save_cut_anywhere_never_offers_a_partial_record_and_heals() {
     assert_ne!(before, after);
 
     let work = base.with_extension("cut");
-    for at in cuts(&base, mark) {
+    let (end, points) = cuts(&base, mark);
+    for at in points {
         cut(&base, &work, at);
         // A reader sees a consistent prefix: every recorded table is the
         // complete record of one of the two runs, never a mixture.
-        let prior = state::load(&Store::open_read_only(&work).unwrap());
+        let reader = Store::open_read_only(&work).unwrap();
+        let prior = state::load(&reader);
+        if at < end {
+            // Cut short, the save is absent: the store is the one from before.
+            assert_eq!(prior, before, "cut at {at}: part of the save is visible");
+            assert_eq!(dump(&reader), unsaved, "cut at {at}: the store moved");
+        }
+        drop(reader);
         for t in &second().tables {
             let got = prior.get(&t.table);
             assert!(
@@ -252,9 +265,13 @@ fn an_ingest_cut_anywhere_reads_cleanly_and_heals() {
     drop(store);
 
     let work = base.with_extension("cut");
-    for at in cuts(&base, mark) {
+    let (end, points) = cuts(&base, mark);
+    for at in points {
         cut(&base, &work, at);
-        let _ = dump(&Store::open_read_only(&work).unwrap());
+        let seen = dump(&Store::open_read_only(&work).unwrap());
+        if at < end {
+            assert!(seen.is_empty(), "cut at {at}: part of the ingest is visible: {seen:?}");
+        }
         let store = Store::open(&work).unwrap();
         ingest(&store, NODES, EDGES, 1).unwrap();
         assert_eq!(dump(&store), whole, "cut at {at}: the repeat ingest did not heal");

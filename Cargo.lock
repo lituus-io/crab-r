@@ -1639,7 +1639,7 @@ dependencies = [
 
 [[package]]
 name = "uu-graph-r"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "compact_str",
@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "uu-link-r"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "bytes",
  "compact_str",
@@ -1667,7 +1667,7 @@ dependencies = [
 
 [[package]]
 name = "uu-objstore-r"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "futures-util",

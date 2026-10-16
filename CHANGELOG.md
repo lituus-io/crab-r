@@ -6,6 +6,16 @@ All notable changes to crab-r are documented here. Format follows
 
 ## 0.4.0
 
+- **Built on uu-graph-r 0.6.0, uu-objstore-r 0.3.0 and uu-link-r 0.4.3.**
+  graph-r 0.6 writes each transaction as one checksummed log record and
+  replays whole records only, so a describe save or a lineage ingest cut
+  short by a crash or a power cut is absent, never half there: the store is
+  exactly what it was before the run (the crash-cut tests now assert that,
+  at every cut point inside the record). A store written by crab-r 0.3.x is
+  graph-r format 2; this release reads format 3, so the first writable open
+  regenerates it (below) and lookups answer `regenerate_needed` until then.
+  objstore-r 0.3 bounds `pull` and `--publish` transfers by stalls rather
+  than sizes and resumes them after a dropped connection.
 - **A store that cannot be read regenerates instead of erroring.** The store
   is a cache of what describe runs and lineage ingests found, so damage is
   rebuilt, not reported.
