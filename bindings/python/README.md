@@ -30,7 +30,26 @@ crab_r.describe("my-project.mart", openai_url="https://host/v1",
 # Lookups read the store, no network.
 print(crab_r.lookup("state", "my-project.mart.orders.status"))
 print(crab_r.upstream("state", "my-project.mart.orders.status"))
+
+# A TTL: drop the tables no describe or ingest has touched in 90 days.
+crab_r.prune("state", 90)   # {"tables": 3, "columns": 41, "regenerated": False}
 ```
+
+## A store that cannot be read
+
+The store is a cache, so a damaged one (or one written in a format this
+build does not read) is regenerated rather than reported:
+
+- `describe`, `ingest_lineage` and `prune` rebuild it empty, log one warning
+  on the `crab_r` logger, and return `"regenerated": True`.
+- The lookups (`table`, `lookup`, `upstream`, `downstream`, `due`) never
+  raise for it: they return one line starting `regenerate_needed:` that says
+  nothing is recorded. `crab_r.regenerate_needed(store)` is the same check as
+  a bool, without a lookup.
+- Only the store's own data files (`graph.base`, `graph.wal` and their
+  temporaries) are deleted, never through a symbolic link (refused with
+  `CrabError`); anything else in the directory is left alone. A store that is
+  locked by another writer or mid-compaction is never touched.
 
 ## Static lineage and BigQuery names
 

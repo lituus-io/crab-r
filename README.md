@@ -21,6 +21,14 @@ that are checked against the data before they are trusted.
 - **Shareable.** `--publish gs://bucket/prefix` ships the store (only what
   changed, single fenced writer); `crab-describe pull` keeps replicas current.
   Lookups read a store locally.
+- **Self-healing, bounded.** A store that cannot be read (damaged, or in a
+  format this build does not read) is regenerated, never an error: a run, an
+  ingest or a prune rebuilds it empty and says so (`"regenerated": true`),
+  and a lookup answers `regenerate_needed: nothing recorded ...` with success.
+  Only the store's own data files are deleted, never through a symbolic link;
+  a locked or busy store is never touched. `crab-describe prune DIR DAYS`
+  drops the tables no describe or ingest has touched in `DAYS` days, in one
+  transaction and one compaction; pinned nodes stay.
 
 ## Command
 
@@ -45,6 +53,7 @@ crab-describe downstream DIR my-project.mart.orders.status [DEPTH]
 crab-describe table      DIR my-project.mart.orders
 crab-describe due        DIR [N]
 crab-describe pull       gs://bucket/prefix DIR
+crab-describe prune      DIR DAYS
 ```
 
 Credentials come from Application Default Credentials. Nothing is written to
