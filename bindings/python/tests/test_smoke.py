@@ -4,6 +4,7 @@
 
 import json
 import pathlib
+import time
 
 import pytest
 
@@ -60,7 +61,7 @@ def test_a_missing_key_variable_is_named_before_any_network(monkeypatch):
 
 
 def test_the_lineage_and_name_functions_are_exposed():
-    for name in ("ingest_lineage", "bq_id", "bq_path", "dotted"):
+    for name in ("ingest_lineage", "bq_id", "bq_path", "dotted", "prune", "regenerate_needed"):
         assert callable(getattr(crab_r, name))
 
 
@@ -89,6 +90,7 @@ def test_a_lineage_export_ingests_once_and_answers_offline(tmp_path):
     assert (done["created"], done["updated"], done["edges"]) == (14, 0, 20)
     assert done["skipped"] == {"defined_by": 4, "derives_from:bq-routine": 1, "routine": 1, "writes_to": 1}
     assert done["rejected"] == []
+    assert done["regenerated"] is False
     again = crab_r.ingest_lineage(store, nodes, edges)
     assert again["committed"] is False
     assert "other/raw/events#amount" in crab_r.upstream(store, "bq://proj/mart/orders_v#amt")
@@ -111,3 +113,49 @@ def test_unusable_entries_are_refused_by_position(tmp_path):
         crab_r.ingest_lineage(str(tmp_path / "x"), {"not": "a list"}, [])
     with pytest.raises(TypeError):
         crab_r.ingest_lineage(str(tmp_path / "y"), [object()], [])
+
+
+def _damage(store):
+    (pathlib.Path(store) / "graph.base").write_bytes(b"not a graph-r base")
+
+
+def test_a_damaged_store_answers_nothing_recorded_and_is_regenerated(tmp_path, caplog):
+    store = str(tmp_path / "state")
+    nodes, edges = _export()
+    crab_r.ingest_lineage(store, nodes, edges)
+    (tmp_path / "state" / "notes.txt").write_text("mine")
+    assert crab_r.regenerate_needed(store) is False
+    _damage(store)
+    assert crab_r.regenerate_needed(store) is True
+    for answer in (
+        crab_r.table(store, "proj.mart.orders_v"),
+        crab_r.lookup(store, "proj.mart.orders_t.doubled"),
+        crab_r.upstream(store, "proj.mart.orders_t.doubled"),
+        crab_r.downstream(store, "proj.mart.orders_t.doubled"),
+        crab_r.due(store),
+    ):
+        assert answer.startswith("regenerate_needed: nothing recorded"), answer
+    with caplog.at_level("WARNING", logger="crab_r"):
+        done = crab_r.ingest_lineage(store, nodes, edges)
+    assert done["regenerated"] is True and done["committed"] is True
+    assert "regenerated" in caplog.text
+    assert crab_r.regenerate_needed(store) is False
+    assert "[static]" in crab_r.table(store, "proj.mart.orders_v")
+    assert (tmp_path / "state" / "notes.txt").read_text() == "mine"
+    # A missing store is still an error, not "nothing recorded".
+    assert crab_r.regenerate_needed(str(tmp_path / "absent")) is False
+
+
+def test_prune_removes_what_is_older_than_the_ttl(tmp_path):
+    store = str(tmp_path / "state")
+    nodes, edges = _export()
+    crab_r.ingest_lineage(store, nodes, edges)
+    assert crab_r.prune(store, 30) == {"tables": 0, "columns": 0, "regenerated": False}
+    time.sleep(0.01)
+    pruned = crab_r.prune(store, 0)
+    assert pruned["tables"] > 0 and pruned["columns"] > 0 and pruned["regenerated"] is False
+    with pytest.raises(crab_r.CrabError, match="no table"):
+        crab_r.table(store, "proj.mart.orders_v")
+    _damage(store)
+    assert crab_r.prune(store, 30) == {"tables": 0, "columns": 0, "regenerated": True}
+    assert crab_r.regenerate_needed(store) is False

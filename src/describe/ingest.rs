@@ -85,11 +85,15 @@ pub struct Ingested {
     pub skipped: BTreeMap<String, usize>,
     /// Entries refused.
     pub rejected: Vec<Rejected>,
+    /// The store could not be read and was regenerated empty first
+    /// ([`ingest_dir`]).
+    pub regenerated: bool,
 }
 
 impl Ingested {
     /// As JSON: `{"committed", "created", "updated", "edges", "skipped":
-    /// {name: count}, "rejected": [{"side", "index", "reason"}]}`.
+    /// {name: count}, "rejected": [{"side", "index", "reason"}],
+    /// "regenerated"}`.
     #[must_use]
     pub fn to_json(&self) -> String {
         let mut out = String::with_capacity(128 + 64 * self.rejected.len());
@@ -113,6 +117,7 @@ impl Ingested {
             w.end_object();
         }
         w.end_array();
+        w.key("regenerated").bool(self.regenerated);
         w.end_object();
         out
     }
@@ -576,11 +581,14 @@ fn diff<'p>(
     Ok(ops)
 }
 
-/// [`ingest`] into the store at `dir`, created when absent.
+/// [`ingest`] into the store at `dir`, created when absent and regenerated
+/// when it cannot be read ([`super::lifecycle::open_or_regenerate`]).
 pub fn ingest_dir(dir: &str, nodes_json: &str, edges_json: &str) -> Result<Ingested, String> {
-    let store = Store::open_or_create(dir, graph_r::Config::default())
-        .map_err(|e| format!("{dir}: {e}"))?;
-    ingest(&store, nodes_json, edges_json, graph_r::fsio::now_ms())
+    let (store, regenerated) =
+        super::lifecycle::open_or_regenerate(dir).map_err(|e| format!("{dir}: {e}"))?;
+    let mut out = ingest(&store, nodes_json, edges_json, graph_r::fsio::now_ms())?;
+    out.regenerated = regenerated;
+    Ok(out)
 }
 
 /// One line per rejected entry, for a log.
@@ -598,6 +606,9 @@ pub fn summary(i: &Ingested) -> String {
     }
     if !i.rejected.is_empty() {
         let _ = write!(s, "; rejected {}", i.rejected.len());
+    }
+    if i.regenerated {
+        s.push_str("; the store could not be read and was regenerated");
     }
     s
 }
@@ -736,7 +747,7 @@ mod tests {
         i.rejected.push(Rejected { side: Side::Edge, index: 4, reason: "not an object" });
         assert_eq!(
             i.to_json(),
-            r#"{"committed":true,"created":1,"updated":0,"edges":0,"skipped":{"writes_to":2},"rejected":[{"side":"edge","index":4,"reason":"not an object"}]}"#
+            r#"{"committed":true,"created":1,"updated":0,"edges":0,"skipped":{"writes_to":2},"rejected":[{"side":"edge","index":4,"reason":"not an object"}],"regenerated":false}"#
         );
         assert_eq!(
             summary(&i),

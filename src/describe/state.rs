@@ -21,12 +21,16 @@
 //! (its revalidation interval grows), a re-described one is upserted and
 //! touched `Changed`, so [`graph_r::Snapshot::due`] orders what to look at
 //! next. A reused table costs one small op.
+//!
+//! The same stamp bounds the store: [`prune`] removes the tables no describe
+//! or ingest has written or touched since a cutoff, with their columns.
 
 use crate::base::key::UriBuf;
 use crate::describe::describe::{Action, Report, TableReport};
 use crate::describe::incremental::{Prior, PriorColumn, PriorTable};
 use crate::lineage::Column;
 use graph_r::format::base::eflags::EXACT;
+use graph_r::format::base::nflags::PINNED;
 use graph_r::{DocRecord, EdgeType, Outcome, Snapshot, Store, Touch, Txn, UrlKey};
 use std::collections::{BTreeSet, HashSet};
 
@@ -405,4 +409,278 @@ pub fn load(store: &Store) -> Prior {
         }
     }
     prior
+}
+
+/// What a [`prune`] removed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pruned {
+    /// Tables removed.
+    pub tables: usize,
+    /// Their columns removed.
+    pub columns: usize,
+}
+
+/// Counters for the counted (never clocked) performance tests: per thread,
+/// so parallel tests do not see each other's work.
+#[cfg(test)]
+pub(crate) mod probe {
+    use std::cell::Cell;
+    thread_local! {
+        /// Transactions a prune ran.
+        pub(crate) static TRANSACTIONS: Cell<u64> = const { Cell::new(0) };
+        /// Compactions a prune ran.
+        pub(crate) static COMPACTIONS: Cell<u64> = const { Cell::new(0) };
+    }
+    pub(crate) fn bump(c: &'static std::thread::LocalKey<Cell<u64>>) {
+        c.with(|x| x.set(x.get() + 1));
+    }
+    pub(crate) fn take(c: &'static std::thread::LocalKey<Cell<u64>>) -> u64 {
+        c.with(|x| x.replace(0))
+    }
+}
+
+/// The table subtrees older than a cutoff, and the hierarchy without them.
+#[derive(Default)]
+struct Stale {
+    /// Every node to remove: tables, their columns, datasets left empty.
+    removed: HashSet<UrlKey>,
+    /// Datasets that lost tables but keep some (or are pinned), with the
+    /// tables they keep.
+    datasets: Vec<(UrlKey, Vec<UrlKey>)>,
+    /// The datasets the root keeps.
+    root: Vec<UrlKey>,
+    pruned: Pruned,
+}
+
+fn pinned(snap: &Snapshot<'_>, key: UrlKey) -> bool {
+    snap.node(key).is_some_and(|n| n.flags & PINNED != 0)
+}
+
+/// What `snap` holds that is older than `cutoff_ms`. A table is stale when
+/// the last describe, ingest or reuse touch that wrote it is older than the
+/// cutoff and neither it nor any of its columns is pinned. Nothing stale is
+/// an empty [`Stale`].
+fn stale(snap: &Snapshot<'_>, cutoff_ms: u64) -> Stale {
+    let mut s = Stale::default();
+    for ds in edges_of(snap, UrlKey::of(ROOT), EdgeType::Contains) {
+        let tables = edges_of(snap, ds, EdgeType::Contains);
+        let before = s.pruned.tables;
+        let mut kept = Vec::with_capacity(tables.len());
+        for t in tables {
+            let Some(node) = snap.node(t) else { continue };
+            let columns = edges_of(snap, t, EdgeType::Contains);
+            if node.fetched_at_ms >= cutoff_ms
+                || node.flags & PINNED != 0
+                || columns.iter().any(|&c| pinned(snap, c))
+            {
+                kept.push(t);
+                continue;
+            }
+            s.removed.insert(t);
+            s.pruned.tables += 1;
+            for c in columns {
+                if snap.node(c).is_some() && s.removed.insert(c) {
+                    s.pruned.columns += 1;
+                }
+            }
+        }
+        if s.pruned.tables == before {
+            s.root.push(ds);
+        } else if kept.is_empty() && !pinned(snap, ds) {
+            s.removed.insert(ds);
+        } else {
+            s.root.push(ds);
+            s.datasets.push((ds, kept));
+        }
+    }
+    if s.pruned.tables == 0 {
+        return Stale::default();
+    }
+    s
+}
+
+/// Remove from `store` every table subtree (the table, its columns, their
+/// attributes and edges) not written or touched since `cutoff_ms`, rewrite
+/// the `Contains` sets of the datasets that held them and the root's
+/// (dropping a dataset left empty), and drop the edges other nodes had into
+/// what was removed. Pinned nodes are never removed.
+///
+/// One transaction, then one compaction, however many tables go; nothing
+/// stale writes nothing. The handle is set not to compact inside commits, so
+/// the one compaction is the prune's own.
+pub fn prune(store: &Store, cutoff_ms: u64) -> graph_r::Result<Pruned> {
+    if stale(&store.snapshot(), cutoff_ms).pruned.tables == 0 {
+        return Ok(Pruned::default());
+    }
+    store.set_compact_inline(false);
+    let pruned = transact(store, |w| {
+        // Planned again under the commit lock: a describe that touched a
+        // table since the check above keeps it.
+        let snap = store.snapshot();
+        let s = stale(&snap, cutoff_ms);
+        if s.pruned.tables == 0 {
+            return Ok(Pruned::default());
+        }
+        let contains = |keys: &[UrlKey]| -> Vec<(UrlKey, EdgeType, u16)> {
+            keys.iter().map(|&k| (k, EdgeType::Contains, 1)).collect()
+        };
+        w.set_edges(UrlKey::of(ROOT), &contains(&s.root));
+        for (ds, kept) in &s.datasets {
+            w.set_edges(*ds, &contains(kept));
+        }
+        // Other surviving nodes with an edge into a removed one (lineage
+        // into a removed column): their edge sets without it, flags kept.
+        let rewritten = |k: &UrlKey| {
+            *k == UrlKey::of(ROOT) || s.removed.contains(k) || s.datasets.iter().any(|d| d.0 == *k)
+        };
+        let mut sources: BTreeSet<UrlKey> = BTreeSet::new();
+        for &k in &s.removed {
+            snap.in_edges(k, |src, _, _, _| {
+                if !rewritten(&src) {
+                    sources.insert(src);
+                }
+            });
+        }
+        for src in sources {
+            let mut kept = Vec::new();
+            let mut it = snap.neighbors(src);
+            while let Some(e) = graph_r::LendingIterator::next(&mut it) {
+                if !s.removed.contains(&e.dst_key) {
+                    kept.push((e.dst_key, e.etype, e.weight, e.flags));
+                }
+            }
+            w.set_edges_with_flags(src, &kept);
+        }
+        let mut removed: Vec<UrlKey> = s.removed.iter().copied().collect();
+        removed.sort_unstable();
+        for k in removed {
+            w.remove(k)?;
+        }
+        Ok(s.pruned)
+    })?;
+    if pruned.tables > 0 {
+        compact(store)?;
+    }
+    Ok(pruned)
+}
+
+/// [`Store::transact`], counted in tests.
+fn transact<R>(
+    store: &Store,
+    f: impl for<'t> FnOnce(&mut Txn<'t>) -> graph_r::Result<R>,
+) -> graph_r::Result<R> {
+    #[cfg(test)]
+    probe::bump(&probe::TRANSACTIONS);
+    store.transact(f)
+}
+
+/// [`Store::compact`], counted in tests.
+fn compact(store: &Store) -> graph_r::Result<()> {
+    #[cfg(test)]
+    probe::bump(&probe::COMPACTIONS);
+    store.compact().map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::describe::describe::ColumnReport;
+
+    fn table(name: &str, columns: &[&str]) -> TableReport {
+        TableReport {
+            table: name.into(),
+            kind: "TABLE".into(),
+            rows: 1,
+            bytes: 1,
+            last_modified_ms: 0,
+            producer: None,
+            existing: None,
+            description: None,
+            grain: vec![],
+            filters: vec![],
+            staged: vec![],
+            conditions: vec![],
+            columns: columns
+                .iter()
+                .map(|c| ColumnReport {
+                    column: (*c).into(),
+                    data_type: "INT64".into(),
+                    action: Action::Generate,
+                    existing: None,
+                    description: None,
+                    semantic_type: None,
+                    unit: None,
+                    transform: None,
+                    expression: None,
+                    sources: vec![],
+                    hops: vec![],
+                    confidence: None,
+                    checks: vec![],
+                    consumers: vec![],
+                })
+                .collect(),
+            checks: vec![],
+            model_calls: 0,
+            warnings: vec![],
+            pending: false,
+            spend: crate::base::Spend::default(),
+            meta: None,
+            prekey: 1,
+            key: Some(1),
+            reused: false,
+            carried_checks: None,
+        }
+    }
+
+    fn store(name: &str) -> (std::path::PathBuf, Store) {
+        let d = std::env::temp_dir().join(format!("crab-prune-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let s = Store::open_or_create(&d, graph_r::Config::default()).unwrap();
+        (d, s)
+    }
+
+    /// `n` stale tables of two columns, across two datasets, and one fresh
+    /// table: a prune is one transaction and one compaction for any `n`.
+    #[test]
+    fn a_prune_is_one_transaction_and_one_compaction_for_any_count() {
+        for n in [1usize, 7, 64] {
+            let (d, s) = store(&format!("counted-{n}"));
+            let stale: Vec<_> =
+                (0..n).map(|i| table(&format!("p.d{}.t{i}", i % 2), &["a", "b"])).collect();
+            save(&s, &Report { tables: stale, ..Report::default() }, 1_000).unwrap();
+            save(
+                &s,
+                &Report { tables: vec![table("p.d0.fresh", &["a"])], ..Report::default() },
+                9_000,
+            )
+            .unwrap();
+            let generation = s.generation();
+            probe::take(&probe::TRANSACTIONS);
+            probe::take(&probe::COMPACTIONS);
+            let p = prune(&s, 5_000).unwrap();
+            assert_eq!(p, Pruned { tables: n, columns: 2 * n }, "{n}");
+            assert_eq!(probe::take(&probe::TRANSACTIONS), 1, "{n}: one transaction");
+            assert_eq!(probe::take(&probe::COMPACTIONS), 1, "{n}: one compaction");
+            assert_eq!(s.generation(), generation + 1, "{n}: the store compacted once");
+            assert_eq!(load(&s).len(), 1);
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn nothing_stale_writes_nothing() {
+        let (d, s) = store("nothing");
+        save(&s, &Report { tables: vec![table("p.d.t", &["a"])], ..Report::default() }, 9_000)
+            .unwrap();
+        let wal = std::fs::metadata(d.join(graph_r::store::WAL_FILE)).unwrap().len();
+        let generation = s.generation();
+        probe::take(&probe::TRANSACTIONS);
+        probe::take(&probe::COMPACTIONS);
+        assert_eq!(prune(&s, 5_000).unwrap(), Pruned::default());
+        assert_eq!(probe::take(&probe::TRANSACTIONS), 0);
+        assert_eq!(probe::take(&probe::COMPACTIONS), 0);
+        assert_eq!(s.generation(), generation);
+        assert_eq!(std::fs::metadata(d.join(graph_r::store::WAL_FILE)).unwrap().len(), wal);
+        let _ = std::fs::remove_dir_all(d);
+    }
 }

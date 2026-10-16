@@ -9,6 +9,11 @@
 //! `--budget-usd 0.5`; `profile=False` is `--no-profile`). It returns the
 //! report as a dict. The lookups read a store, no network. Every call
 //! detaches from the interpreter while Rust works.
+//!
+//! A store that cannot be read is regenerated, never an error: `describe`,
+//! `ingest_lineage` and `prune` rebuild it (`"regenerated": True` in what
+//! they return), and a lookup answers `"regenerate_needed: nothing
+//! recorded ..."`; `regenerate_needed(store)` asks directly.
 
 use crab::describe::app;
 use pyo3::create_exception;
@@ -167,7 +172,45 @@ fn ingest_lineage<'py>(
     let done = py
         .detach(|| crab::describe::ingest::ingest_dir(&store, &nodes, &edges))
         .map_err(CrabError::new_err)?;
+    if done.regenerated {
+        regenerated_warning(py, &store)?;
+    }
     json.call_method1("loads", (done.to_json(),))
+}
+
+/// The one line a regeneration logs, on the `crab_r` logger.
+fn regenerated_warning(py: Python<'_>, store: &str) -> PyResult<()> {
+    py.import("logging")?.call_method1("getLogger", ("crab_r",))?.call_method1(
+        "warning",
+        (format!("store {store} could not be read; regenerated empty"),),
+    )?;
+    Ok(())
+}
+
+/// Remove from `store` the tables no `describe` or `ingest_lineage` has
+/// written or touched in `max_age_days` days, with their columns: one
+/// transaction and one compaction, nothing written when nothing is that old.
+/// Pinned nodes stay. Returns `{"tables", "columns", "regenerated"}`.
+#[pyfunction]
+fn prune<'py>(py: Python<'py>, store: String, max_age_days: u32) -> PyResult<Bound<'py, PyDict>> {
+    let (p, regenerated) = py
+        .detach(|| crab::describe::lifecycle::prune(&store, max_age_days))
+        .map_err(|e| CrabError::new_err(format!("{store}: {e}")))?;
+    if regenerated {
+        regenerated_warning(py, &store)?;
+    }
+    let out = PyDict::new(py);
+    out.set_item("tables", p.tables)?;
+    out.set_item("columns", p.columns)?;
+    out.set_item("regenerated", regenerated)?;
+    Ok(out)
+}
+
+/// `store` exists but cannot be read: lookups answer nothing recorded, and
+/// the next `describe`, `ingest_lineage` or `prune` regenerates it.
+#[pyfunction]
+fn regenerate_needed(py: Python<'_>, store: String) -> bool {
+    py.detach(|| crab::describe::lifecycle::regenerate_needed(&store))
 }
 
 fn name(s: &str) -> PyResult<crab::base::key::BqName<'_>> {
@@ -216,6 +259,8 @@ fn crab_r(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(due, m)?)?;
     m.add_function(wrap_pyfunction!(pull, m)?)?;
     m.add_function(wrap_pyfunction!(ingest_lineage, m)?)?;
+    m.add_function(wrap_pyfunction!(prune, m)?)?;
+    m.add_function(wrap_pyfunction!(regenerate_needed, m)?)?;
     m.add_function(wrap_pyfunction!(bq_id, m)?)?;
     m.add_function(wrap_pyfunction!(bq_path, m)?)?;
     m.add_function(wrap_pyfunction!(dotted, m)?)?;

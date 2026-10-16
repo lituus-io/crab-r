@@ -342,6 +342,9 @@ pub struct Report {
     pub unreadable: Vec<String>,
     /// Total spend.
     pub spend: Spend,
+    /// The store could not be read and was regenerated empty: this run
+    /// reused nothing and recorded only what it described.
+    pub regenerated: bool,
 }
 
 /// `project.dataset.table` of a catalog table.

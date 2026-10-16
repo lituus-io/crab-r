@@ -39,7 +39,14 @@
 //! crab-describe downstream DIR project.dataset.table.column [DEPTH]
 //! crab-describe due        DIR [N]
 //! crab-describe pull       gs://bucket/prefix DIR   # replica: fetch, or refresh, a published store
+//! crab-describe prune      DIR DAYS                 # drop tables not described or ingested in DAYS
 //! ```
+//!
+//! A store that cannot be read (damaged, or written in a format this build
+//! does not read) is regenerated, not reported: a run, an ingest or a prune
+//! rebuilds it empty (the report's `"regenerated": true`), and a lookup
+//! answers `regenerate_needed: nothing recorded ...` with success (see
+//! [`crate::describe::lifecycle`]).
 //!
 //! Credentials: Application Default Credentials. Nothing is written to the
 //! warehouse unless `--apply` is given; then only empty descriptions are
@@ -607,8 +614,12 @@ pub async fn pull(src: &str, dir: &str) -> Result<String, String> {
     ) -> Result<String, String> {
         let m = objstore_r::mirror::Mirror::new(objects, prefix).map_err(|e| e.to_string())?;
         let path = std::path::Path::new(dir);
-        if path.join(graph_r::store::BASE_FILE).exists() {
-            let store = graph_r::Store::open_read_only(path).map_err(|e| e.to_string())?;
+        let local = if path.join(graph_r::store::BASE_FILE).exists() {
+            crate::describe::lifecycle::open_for_lookup(path).map_err(|e| e.to_string())?
+        } else {
+            None
+        };
+        if let Some(store) = local {
             let before = store.generation();
             let changed = m.refresh_into(&store).await.map_err(|e| e.to_string())?;
             Ok(format!(
@@ -617,10 +628,19 @@ pub async fn pull(src: &str, dir: &str) -> Result<String, String> {
                 store.generation()
             ))
         } else {
+            // First time, or a damaged replica: a full pull replaces both
+            // data files (never through a link).
+            let damaged = path.join(graph_r::store::BASE_FILE).exists();
+            if damaged {
+                crate::describe::lifecycle::refuse_links(path).map_err(|e| e.to_string())?;
+            }
             match m.pull_into(path).await.map_err(|e| e.to_string())? {
-                Some(p) => {
-                    Ok(format!("pulled generation {} into {dir} ({} bytes)", p.generation, p.bytes))
-                }
+                Some(p) => Ok(format!(
+                    "{} generation {} into {dir} ({} bytes)",
+                    if damaged { "regenerated: pulled" } else { "pulled" },
+                    p.generation,
+                    p.bytes
+                )),
                 None => Err("nothing published there".into()),
             }
         }
@@ -649,7 +669,12 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
     let (Some(dir), name) = (args.first(), args.get(1).map_or("", String::as_str)) else {
         return Err(format!("usage: crab-describe {cmd} STORE_DIR NAME"));
     };
-    let store = graph_r::Store::open_read_only(dir).map_err(|e| format!("{dir}: {e}"))?;
+    // A damaged store answers as one with nothing recorded, flagged.
+    let Some(store) =
+        crate::describe::lifecycle::open_for_lookup(dir).map_err(|e| format!("{dir}: {e}"))?
+    else {
+        return Ok(crate::describe::lifecycle::nothing_recorded(dir));
+    };
     let snap = store.snapshot();
     let mut uri = crate::base::key::UriBuf::new();
     // A `bq://` name, in either of its forms, is read by the one parser;
@@ -801,6 +826,22 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
     Ok(out)
 }
 
+/// `prune STORE_DIR DAYS`: remove the tables no describe or ingest has
+/// written or touched in `DAYS` days, with their columns; one line saying
+/// what went.
+pub fn prune(args: &[String]) -> Result<String, String> {
+    let (Some(dir), Some(days)) = (args.first(), args.get(1).and_then(|d| d.parse().ok())) else {
+        return Err("usage: crab-describe prune STORE_DIR DAYS".into());
+    };
+    let (p, regenerated) =
+        crate::describe::lifecycle::prune(dir, days).map_err(|e| format!("{dir}: {e}"))?;
+    Ok(if regenerated {
+        format!("{dir} could not be read and was regenerated; nothing to prune\n")
+    } else {
+        format!("pruned {} tables, {} columns from {dir}\n", p.tables, p.columns)
+    })
+}
+
 /// [`describe`] with the lineage source when there is one.
 async fn describe_with<M: Model, W: Warehouse + TableMetadata, L: LineageSource>(
     model: &M,
@@ -861,11 +902,17 @@ pub async fn run(a: &Options, log: &mut impl FnMut(&str)) -> Result<Report, Stri
     cfg.concurrency = a.concurrency;
     cfg.budget =
         crate::base::Budget::new(50_000_000, 200 << 30, (a.budget_usd * 1e6) as u64, 6 * 3_600_000);
+    let mut regenerated = false;
     let store = match &a.store {
-        Some(dir) => Some(
-            graph_r::Store::open_or_create(dir, graph_r::Config::default())
-                .map_err(|e| format!("{dir}: {e}"))?,
-        ),
+        Some(dir) => {
+            let (s, r) = crate::describe::lifecycle::open_or_regenerate(dir)
+                .map_err(|e| format!("{dir}: {e}"))?;
+            if r {
+                log(&format!("warning: store {dir} could not be read; regenerated empty"));
+            }
+            regenerated = r;
+            Some(s)
+        }
         None => None,
     };
     if let Some(s) = &store {
@@ -914,6 +961,8 @@ pub async fn run(a: &Options, log: &mut impl FnMut(&str)) -> Result<Report, Stri
         );
         describe_with(&model, &bq, dp.as_ref(), &cfg).await
     };
+    let mut report = report;
+    report.regenerated = regenerated;
 
     let json = report::to_json(&report);
     for w in &report.warnings {

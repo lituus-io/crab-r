@@ -33,6 +33,7 @@ pub fn to_json(r: &Report) -> String {
     }
     w.end_array();
     spend(&mut w, "spend", r.spend);
+    w.key("regenerated").bool(r.regenerated);
     w.key("tables").begin_array();
     for t in &r.tables {
         table(&mut w, t);
