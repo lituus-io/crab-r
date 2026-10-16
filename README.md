@@ -1,5 +1,7 @@
 # crab-r
 
+[![CI](https://github.com/lituus-io/crab-r/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lituus-io/crab-r/actions/workflows/ci.yml) [![Security](https://github.com/lituus-io/crab-r/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/lituus-io/crab-r/actions/workflows/security.yml) [![Release](https://github.com/lituus-io/crab-r/actions/workflows/release.yaml/badge.svg)](https://github.com/lituus-io/crab-r/releases/latest) [![crates.io](https://img.shields.io/crates/v/uu-crab-r?label=crates.io)](https://crates.io/crates/uu-crab-r) [![docs.rs](https://img.shields.io/docsrs/uu-crab-r?label=docs.rs)](https://docs.rs/uu-crab-r) [![PyPI](https://img.shields.io/pypi/v/uu-crab-r?label=PyPI)](https://pypi.org/project/uu-crab-r/) [![Python](https://img.shields.io/pypi/pyversions/uu-crab-r)](https://pypi.org/project/uu-crab-r/) [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
+
 Generative technical metadata for BigQuery. Name a **project**, a **dataset**,
 a **table**, or hand over **SQL**: crab-r reads the catalog, the queries that
 produce each table (job history, view definitions, or your SQL), Dataplex
@@ -21,6 +23,21 @@ that are checked against the data before they are trusted.
 - **Shareable.** `--publish gs://bucket/prefix` ships the store (only what
   changed, single fenced writer); `crab-describe pull` keeps replicas current.
   Lookups read a store locally.
+- **Self-healing, bounded.** A store that cannot be read (damaged, or in a
+  format this build does not read) is regenerated, never an error: a run, an
+  ingest or a prune rebuilds it empty and says so (`"regenerated": true`),
+  and a lookup answers `regenerate_needed: nothing recorded ...` with success.
+  Only the store's own data files are deleted, never through a symbolic link;
+  a locked or busy store is never touched. `crab-describe prune DIR DAYS`
+  drops the tables no describe or ingest has touched in `DAYS` days, in one
+  transaction and one compaction; pinned nodes stay.
+
+## Install
+
+| | |
+|---|---|
+| Rust | `cargo add uu-crab-r` |
+| Python ≥3.12 (abi3 wheels: Linux x86_64/aarch64, macOS x86_64/arm64, Windows x86_64) | `pip install uu-crab-r` → `import crab_r` |
 
 ## Command
 
@@ -45,6 +62,7 @@ crab-describe downstream DIR my-project.mart.orders.status [DEPTH]
 crab-describe table      DIR my-project.mart.orders
 crab-describe due        DIR [N]
 crab-describe pull       gs://bucket/prefix DIR
+crab-describe prune      DIR DAYS
 ```
 
 Credentials come from Application Default Credentials. Nothing is written to

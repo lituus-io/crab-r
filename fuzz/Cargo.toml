@@ -100,5 +100,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "fuzz_store"
+path = "fuzz_targets/fuzz_store.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

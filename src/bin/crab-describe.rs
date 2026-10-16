@@ -21,6 +21,18 @@ fn main() -> ExitCode {
             }
         };
     }
+    if argv.first().map(String::as_str) == Some("prune") {
+        return match app::prune(&argv[1..]) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("crab-describe prune: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if argv.first().map(String::as_str) == Some("pull") {
         let (Some(src), Some(dir)) = (argv.get(1), argv.get(2)) else {
             eprintln!("usage: crab-describe pull gs://BUCKET/PREFIX|DIR STORE_DIR");

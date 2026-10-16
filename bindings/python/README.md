@@ -1,5 +1,7 @@
 # crab-r
 
+[![CI](https://github.com/lituus-io/crab-r/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lituus-io/crab-r/actions/workflows/ci.yml) [![Security](https://github.com/lituus-io/crab-r/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/lituus-io/crab-r/actions/workflows/security.yml) [![Release](https://github.com/lituus-io/crab-r/actions/workflows/release.yaml/badge.svg)](https://github.com/lituus-io/crab-r/releases/latest) [![crates.io](https://img.shields.io/crates/v/uu-crab-r?label=crates.io)](https://crates.io/crates/uu-crab-r) [![docs.rs](https://img.shields.io/docsrs/uu-crab-r?label=docs.rs)](https://docs.rs/uu-crab-r) [![PyPI](https://img.shields.io/pypi/v/uu-crab-r?label=PyPI)](https://pypi.org/project/uu-crab-r/) [![Python](https://img.shields.io/pypi/pyversions/uu-crab-r)](https://pypi.org/project/uu-crab-r/) [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](https://github.com/lituus-io/crab-r/blob/main/LICENSE)
+
 `pip install uu-crab-r` → `import crab_r` (Python ≥ 3.12, one `abi3` wheel per
 platform).
 
@@ -30,7 +32,26 @@ crab_r.describe("my-project.mart", openai_url="https://host/v1",
 # Lookups read the store, no network.
 print(crab_r.lookup("state", "my-project.mart.orders.status"))
 print(crab_r.upstream("state", "my-project.mart.orders.status"))
+
+# A TTL: drop the tables no describe or ingest has touched in 90 days.
+crab_r.prune("state", 90)   # {"tables": 3, "columns": 41, "regenerated": False}
 ```
+
+## A store that cannot be read
+
+The store is a cache, so a damaged one (or one written in a format this
+build does not read) is regenerated rather than reported:
+
+- `describe`, `ingest_lineage` and `prune` rebuild it empty, log one warning
+  on the `crab_r` logger, and return `"regenerated": True`.
+- The lookups (`table`, `lookup`, `upstream`, `downstream`, `due`) never
+  raise for it: they return one line starting `regenerate_needed:` that says
+  nothing is recorded. `crab_r.regenerate_needed(store)` is the same check as
+  a bool, without a lookup.
+- Only the store's own data files (`graph.base`, `graph.wal` and their
+  temporaries) are deleted, never through a symbolic link (refused with
+  `CrabError`); anything else in the directory is left alone. A store that is
+  locked by another writer or mid-compaction is never touched.
 
 ## Static lineage and BigQuery names
 

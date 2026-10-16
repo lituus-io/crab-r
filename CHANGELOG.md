@@ -4,6 +4,61 @@ All notable changes to crab-r are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0
+
+- **Built on uu-graph-r 0.6.0, uu-objstore-r 0.3.0 and uu-link-r 0.4.3.**
+  graph-r 0.6 writes each transaction as one checksummed log record and
+  replays whole records only, so a describe save or a lineage ingest cut
+  short by a crash or a power cut is absent, never half there: the store is
+  exactly what it was before the run (the crash-cut tests now assert that,
+  at every cut point inside the record). A store written by crab-r 0.3.x is
+  graph-r format 2; this release reads format 3, so the first writable open
+  regenerates it (below) and lookups answer `regenerate_needed` until then.
+  objstore-r 0.3 bounds `pull` and `--publish` transfers by stalls rather
+  than sizes and resumes them after a dropped connection.
+- **A store that cannot be read regenerates instead of erroring.** The store
+  is a cache of what describe runs and lineage ingests found, so damage is
+  rebuilt, not reported.
+  - `describe::lifecycle::open_or_regenerate` is the one writable open of
+    `describe`, `ingest` and `prune`. On graph-r's `Version`, `Corrupt` or
+    `Format`, or a base or log that cannot be read, it deletes the store's
+    own data files (`graph.base`, `graph.wal` and graph-r's temporaries of
+    them, by name) under the commit lock and creates a fresh store. The run
+    then records what it describes.
+  - The describe report and the ingest result carry `"regenerated":
+    true|false`; the run logs one `warning:` line, the Python package one
+    warning on the `crab_r` logger.
+  - `Locked` and `Busy` are not damage: nothing is deleted. A regeneration
+    that finds the commit lock held waits for it, then refuses with
+    `Locked`.
+  - Refused with a typed error, nothing deleted, when the store directory or
+    one of its own files is a symbolic link or not a regular file. Nothing
+    else in the directory is touched. The lock files stay: they hold no
+    data, and replacing one a waiter holds open would let two writers hold
+    the lock at once.
+- **Lookups never error on a damaged store.** `table`, `lookup`, `upstream`,
+  `downstream` and `due` answer one line, `regenerate_needed: nothing
+  recorded; ...`, and succeed (exit 0). `lifecycle::regenerate_needed(dir)`
+  and Python's `crab_r.regenerate_needed(store)` ask directly. A missing
+  store is still an error. `pull` into a damaged replica regenerates it by a
+  full pull.
+- **TTL prune.** `lifecycle::prune(dir, max_age_days)`, `crab-describe prune
+  DIR DAYS` and `crab_r.prune(store, max_age_days)` remove the table subtrees
+  (the table, its columns, their attributes and edges) no describe, reuse or
+  ingest has written or touched since the cutoff. The datasets that held them
+  and the root are rewritten, a dataset left empty is dropped, and lineage
+  edges into a removed column are dropped. One transaction, then one
+  compaction, however many tables go; nothing that old writes nothing.
+  Pinned nodes, and tables with a pinned column, are never pruned.
+- New tests: every damage to either data file (garbage, truncated, bit-flipped
+  header, wrong version, empty base) regenerates on the describe and ingest
+  paths and answers "nothing recorded" on every lookup; a locked or busy
+  store keeps its bytes; links and non-files are refused with their targets
+  untouched; prune removes exactly the stale subtrees, counted as one
+  transaction and one compaction for 1, 7 and 64 tables. Fuzz target
+  `fuzz_store`: arbitrary bytes as both data files through every lookup and
+  the regenerating open.
+
 ## 0.3.1
 
 - **Built on uu-graph-r 0.5.1**, whose commit lock is fair: a writer
