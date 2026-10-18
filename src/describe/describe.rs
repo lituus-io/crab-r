@@ -403,7 +403,7 @@ pub(crate) fn schema_columns(meta: &TableMeta) -> Vec<ColumnSpec> {
 
 /// A catalog table spec from a table resource (for upstream tables outside
 /// the synced datasets).
-fn spec_from_meta(dataset: &str, name: &str, meta: &TableMeta) -> TableSpec {
+pub(crate) fn spec_from_meta(dataset: &str, name: &str, meta: &TableMeta) -> TableSpec {
     let kind = match meta.kind.as_str() {
         "VIEW" => TableKind::View,
         "MATERIALIZED_VIEW" => TableKind::MaterializedView,

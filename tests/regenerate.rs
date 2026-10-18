@@ -375,12 +375,24 @@ fn a_pull_into_a_damaged_replica_regenerates_it_by_a_full_pull() {
     })
     .unwrap();
     let replica = dir("pull-replica");
-    let out = objstore_r::http::block_on(app::pull(&s(&bucket), &s(&replica))).unwrap().unwrap();
+    let out = objstore_r::http::block_on(app::pull(
+        &s(&bucket),
+        &s(&replica),
+        &app::Credentials::default(),
+    ))
+    .unwrap()
+    .unwrap();
     assert!(out.starts_with("pulled generation"), "{out}");
     std::fs::write(replica.join("notes.txt"), b"mine").unwrap();
     damage(BASE_FILE, "garbage", &replica);
     assert!(regenerate_needed(&replica));
-    let out = objstore_r::http::block_on(app::pull(&s(&bucket), &s(&replica))).unwrap().unwrap();
+    let out = objstore_r::http::block_on(app::pull(
+        &s(&bucket),
+        &s(&replica),
+        &app::Credentials::default(),
+    ))
+    .unwrap()
+    .unwrap();
     assert!(out.starts_with("regenerated: pulled generation"), "{out}");
     assert!(!regenerate_needed(&replica));
     let pulled = Store::open_read_only(&replica).unwrap();

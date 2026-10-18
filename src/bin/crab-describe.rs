@@ -38,9 +38,13 @@ fn main() -> ExitCode {
             eprintln!("usage: crab-describe pull gs://BUCKET/PREFIX|DIR STORE_DIR");
             return ExitCode::from(2);
         };
-        return finish("pull", objstore_r::http::block_on(app::pull(src, dir)), |msg| {
-            eprintln!("{msg}");
-        });
+        return finish(
+            "pull",
+            objstore_r::http::block_on(app::pull(src, dir, &app::Credentials::default())),
+            |msg| {
+                eprintln!("{msg}");
+            },
+        );
     }
     let opts = match app::parse(argv) {
         Ok(o) => o,

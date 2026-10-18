@@ -38,6 +38,7 @@ pub mod generate;
 pub mod incremental;
 pub mod ingest;
 pub mod lifecycle;
+pub mod offline;
 pub mod producers;
 pub mod report;
 pub mod splice;
