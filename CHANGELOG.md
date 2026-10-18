@@ -4,6 +4,48 @@ All notable changes to crab-r are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.1
+
+- **`exec::query` and Python `crab_r.query` / `query_async`: one guarded,
+  read-only query.** The `MetadataGuard`'s `check_query` is the only gate,
+  asked before a credential is touched and again by the transport for the
+  body it sends: a statement reading a table outside `INFORMATION_SCHEMA`,
+  `__TABLES__` and the graph datasets (default `ops`, `infra`; a
+  `project.dataset` entry scopes one to a project) is refused with nothing
+  sent. The run is `Warehouse::run` over objstore-r's client under the
+  guard, with `maximumBytesBilled` (default 1 GiB), a row cap (default
+  1,000) and a timeout (default 30 s); the job's own results are read
+  through the `Tracked` transport, only as many rows as are still wanted.
+- **Rows are plain data with an explicit cut.** Python gets a `QueryRows`
+  list of dicts of str, int, float, bool and None (TIMESTAMP as ISO 8601
+  UTC, DATE/DATETIME/TIME as ISO 8601, NUMERIC as exact decimal text, BYTES
+  as base64, STRUCT/ARRAY/JSON as compact JSON text). `budget_tokens` keeps
+  whole rows, in order, that fit (about four bytes a token, each row
+  measured as compact JSON); `truncated` is set when the row cap or the
+  budget cut any, beside `total_rows`, `bytes_processed`, `bytes_billed` and
+  `cache_hit`.
+- **Every failure is typed.** One `QueryError` (a `CrabError`) with
+  `.reason`: `refused_by_guard`, `no_credentials`, `expired`, `no_access`,
+  `not_found`, `bytes_limit`, `invalid_query`, `timeout`, `unreachable`. Its
+  text never holds the credential: a message BigQuery wrote has the token
+  it was sent removed. Credentials follow `table_meta`: `access_token=` as
+  given, else discovery with the metadata server forbidden unless
+  `metadata_server=True`.
+- **The GIL is released and the process-wide runtime shared**; cancelling
+  `query_async` drops the request.
+- `exec::Error::Unauthenticated` (a 401) is told apart from `Denied` (a
+  403). `MetadataGuard::with_own_jobs`. `BigQueryConfig::location` may be
+  empty, leaving the job's placement to BigQuery.
+- Tests: decoding and error mapping (unit); generated SQL through the
+  query path, never reaching a stub BigQuery when it reads a forbidden
+  table (property); `jobs.query` + `getQueryResults` against a stub with
+  long polls, paging, truncation and cancellation (integration); counted
+  requests and budgets, the GIL released, one runtime (performance); a
+  decoy metadata server never asked and an echoing server never leaking
+  the token into an error (security). The binding gains a `testing`
+  feature (`_set_test_origin`) for its stub tests; CI builds it for
+  pytest.
+
 ## 0.5.0
 
 - **Built on uu-objstore-r 0.4.0 and uu-link-r 0.4.4** (graph-r 0.6.0 as
