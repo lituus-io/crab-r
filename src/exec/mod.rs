@@ -31,6 +31,8 @@ mod decode;
 #[cfg(feature = "http")]
 pub mod guard;
 pub mod metadata;
+#[cfg(feature = "http")]
+pub mod query;
 pub mod table_meta;
 
 pub use crate::base::batch::{Batch, ColType};
@@ -150,6 +152,11 @@ pub enum Error {
     /// A conditional write lost a race: the resource changed since it was
     /// read (`If-Match` etag mismatch). Re-read and retry.
     PreconditionFailed,
+    /// The credential was refused as expired or invalid (401).
+    Unauthenticated {
+        /// Warehouse message.
+        message: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -168,6 +175,7 @@ impl fmt::Display for Error {
             Self::PreconditionFailed => {
                 write!(f, "the resource changed since it was read (etag mismatch)")
             }
+            Self::Unauthenticated { message } => write!(f, "unauthenticated: {message}"),
         }
     }
 }

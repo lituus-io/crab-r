@@ -145,6 +145,13 @@ impl<'a> MetadataGuard<'a> {
         self
     }
 
+    /// This guard, allowing the results of the jobs in `own_jobs`.
+    #[must_use]
+    pub fn with_own_jobs(mut self, own_jobs: &'a OwnJobs) -> Self {
+        self.own_jobs = Some(own_jobs);
+        self
+    }
+
     /// The graph datasets.
     #[must_use]
     pub fn graph_datasets(&self) -> &'a [DatasetRef<'a>] {

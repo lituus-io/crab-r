@@ -547,7 +547,8 @@ pub(crate) fn api_error(status: u16, body: &[u8]) -> Error {
         objstore_r::transport::ApiError::parse(status, body);
     match (status, reason.as_str()) {
         (_, "bytesBilledLimitExceeded") => Error::BytesLimit { message },
-        (_, "accessDenied") | (401 | 403, _) => Error::Denied { message },
+        (401, _) => Error::Unauthenticated { message },
+        (_, "accessDenied") | (403, _) => Error::Denied { message },
         (_, "invalidQuery" | "notFound" | "invalid") | (400, _) => {
             let pos = position(&message);
             Error::Query {
@@ -645,6 +646,7 @@ mod tests {
         let body = br#"{"error":{"code":400,"message":"Query exceeded limit for bytes billed: 1000.","errors":[{"reason":"bytesBilledLimitExceeded"}]}}"#;
         assert!(matches!(api_error(400, body), Error::BytesLimit { .. }));
         assert!(matches!(api_error(403, b"{}"), Error::Denied { .. }));
+        assert!(matches!(api_error(401, b"{}"), Error::Unauthenticated { .. }));
         assert!(api_error(503, b"busy").is_retriable());
     }
 

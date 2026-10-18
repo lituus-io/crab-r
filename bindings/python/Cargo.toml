@@ -29,6 +29,10 @@ tokio = { version = "1.40", default-features = false, features = ["rt-multi-thre
 # Awaitables on that runtime; cancelling the Python future drops the Rust one.
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 
+[features]
+# Test seams: `_set_test_origin` sends queries to a loopback stub.
+testing = ["crab/testing"]
+
 # Detach from the parent workspace so the main `cargo test` never needs Python.
 [workspace]
 
