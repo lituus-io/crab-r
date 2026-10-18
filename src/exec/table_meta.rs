@@ -399,7 +399,9 @@ pub fn trim_schema(schema: &str, omit: &[String], limits: &Limits) -> crate::bas
         Event::ArrayStart => {
             let start = value_start(schema, 0);
             s.skip(Event::ArrayStart)?;
-            fields_array(schema, start..s.offset(), "", 1, &mut st)?.into_owned()
+            let end = s.offset();
+            let new = fields_array(schema, start..end, "", 1, &mut st)?;
+            format!("{}{new}{}", &schema[..start], &schema[end..])
         }
         Event::ObjectStart => {
             let mut fields: Option<Range<usize>> = None;
@@ -432,6 +434,10 @@ pub fn trim_schema(schema: &str, omit: &[String], limits: &Limits) -> crate::bas
         }
         _ => return Err(crate::base::Error::json("schema is not an object or array")),
     };
+    // One value and nothing after it.
+    if s.next_event()?.is_some() {
+        return Err(crate::base::Error::json("text after the schema"));
+    }
     Ok(Trimmed { json, columns: st.columns, omitted: st.omitted, truncated: st.truncated })
 }
 
@@ -607,6 +613,14 @@ mod tests {
 
     fn lim(cols: usize, depth: usize, desc: usize) -> Limits {
         Limits { max_columns: cols, max_depth: depth, max_description: desc, ..Limits::default() }
+    }
+
+    #[test]
+    fn text_after_the_schema_is_refused() {
+        // Found by fuzz_table_meta: the trailing value was dropped silently.
+        assert!(trim_schema("[][1", &[], &Limits::default()).is_err());
+        assert!(trim_schema("{} {}", &[], &Limits::default()).is_err());
+        assert_eq!(trim_schema(" []  ", &[], &Limits::default()).unwrap().json, " []  ");
     }
 
     #[test]
