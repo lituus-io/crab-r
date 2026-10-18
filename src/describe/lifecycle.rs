@@ -23,10 +23,12 @@
 //! another process may be waiting on them, so replacing them would let two
 //! writers hold "the" lock at once.
 //!
-//! A data file another process still maps cannot be deleted on Windows (os
-//! error 1224), but it can be renamed: it is renamed aside, to a temporary
-//! name the next regeneration deletes, and the store is built fresh while
-//! the reader keeps its mapping. When even the rename is refused the open
+//! A data file another process still maps is deleted where the platform
+//! allows it (current Windows deletes a mapped data file with POSIX
+//! semantics; os error 1224 refuses writing or truncating it, not deleting
+//! it). Where the delete is refused it is renamed aside, to a temporary name
+//! the next regeneration deletes, and the store is built fresh while the
+//! reader keeps its mapping. When even the rename is refused the open
 //! is [`Opened::RegeneratePending`], never an error: nothing is recorded
 //! this time, and the next writer tries again.
 //!

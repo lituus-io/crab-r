@@ -400,11 +400,12 @@ fn a_pull_into_a_damaged_replica_regenerates_it_by_a_full_pull() {
     assert_eq!(bytes(&replica.join("notes.txt")), b"mine");
 }
 
-/// L10: a store another reader maps is regenerated, never an error. On
-/// Windows the mapped base cannot be deleted (os error 1224), so it is
-/// renamed aside and the reader keeps its mapping; elsewhere it is deleted
-/// while still mapped. Either way the writer gets a fresh store and the
-/// reader keeps answering from what it mapped.
+/// L10: a store another reader maps is regenerated, never an error. The
+/// mapped base is deleted where the platform allows it (current Windows does,
+/// with POSIX semantics) and renamed aside where it does not (covered by the
+/// lifecycle unit test that refuses the delete as os error 1224). Either way
+/// the writer gets a fresh store and the reader keeps answering from what it
+/// mapped.
 #[test]
 fn a_store_another_reader_maps_regenerates_around_it() {
     use graph_r::{DocRecord, EdgeType, UrlKey};
@@ -441,14 +442,6 @@ fn a_store_another_reader_maps_regenerates_around_it() {
         assert!(fresh.is_empty());
     }
     assert!(reader.snapshot().node(UrlKey::of(ds)).is_some(), "the reader keeps its mapping");
-    #[cfg(windows)]
-    {
-        let aside = std::fs::read_dir(&d)
-            .unwrap()
-            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains(".aside."))
-            .count();
-        assert!(aside >= 1, "the mapped base was renamed aside, not deleted");
-    }
     drop(reader);
     // With the reader gone, the next writer finds a readable, fresh store.
     assert!(!open_or_regenerate(&d).unwrap().regenerated());
