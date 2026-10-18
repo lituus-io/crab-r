@@ -736,11 +736,57 @@ pub async fn pull(src: &str, dir: &str, creds: &Credentials) -> Result<String, S
 }
 
 /// The lookup subcommands.
-pub const LOOKUPS: [&str; 5] = ["table", "lookup", "upstream", "downstream", "due"];
+pub const LOOKUPS: [&str; 6] = ["table", "lookup", "upstream", "downstream", "due", "search"];
+
+/// The last line of an answer cut to its token budget.
+pub const TRUNCATED: &str = "truncated";
 
 /// A lookup subcommand over the store in `args[0]`: its text, or why
 /// not. Reads only the store, no network.
 pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
+    lookup_within(cmd, args, None)
+}
+
+/// [`lookup`] answering within `budget` tokens (graph-r's
+/// [`graph_r::TokenBudget`], about four bytes a token): whole lines, nearest
+/// first, then one `truncated: N more lines` line when some did not fit.
+/// `search STORE TEXT [N]` is graph-r's own ranked, budgeted query over the
+/// store's names and descriptions.
+pub fn lookup_within(
+    cmd: &str,
+    args: &[String],
+    budget: Option<graph_r::TokenBudget>,
+) -> Result<String, String> {
+    let full = lookup_all(cmd, args, budget)?;
+    Ok(match budget {
+        Some(b) => within(&full, b),
+        None => full,
+    })
+}
+
+/// `text` cut, at a line, to `budget` tokens.
+fn within(text: &str, budget: graph_r::TokenBudget) -> String {
+    let mut out = String::new();
+    let mut spent = 0u64;
+    let lines: Vec<&str> = text.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let cost = graph_r::text::estimate_tokens(line.len() + 1);
+        if spent + cost > u64::from(budget.0) {
+            let _ = writeln!(out, "{TRUNCATED}: {} more lines", lines.len() - i);
+            return out;
+        }
+        spent += cost;
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn lookup_all(
+    cmd: &str,
+    args: &[String],
+    budget: Option<graph_r::TokenBudget>,
+) -> Result<String, String> {
     use crate::describe::state::attr;
     use graph_r::{Direction, EdgeType, UrlKey};
     let mut out = String::new();
@@ -797,6 +843,16 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
     };
     let depth: u32 = args.get(2).and_then(|d| d.parse().ok()).unwrap_or(10);
     match cmd {
+        "search" => {
+            let opts = graph_r::QueryOpts {
+                limit: args.get(2).and_then(|n| n.parse().ok()).unwrap_or(20),
+                budget: budget.unwrap_or_default(),
+                ..graph_r::QueryOpts::default()
+            };
+            for h in snap.query(name, &opts) {
+                writeln!(out, "{}", line(h.key)).unwrap_or_default();
+            }
+        }
         "due" => {
             let n: usize = args.get(1).and_then(|d| d.parse().ok()).unwrap_or(20);
             for d in
