@@ -180,3 +180,23 @@ fn no_credential_is_a_typed_outcome_and_the_metadata_server_is_never_asked() {
     );
     assert!(decoy.accept().is_err(), "the metadata server was contacted");
 }
+
+#[test]
+fn batch_latency_p95_is_one_round_trip() {
+    let stub = stub();
+    let c = client(&stub, &Limits::default());
+    let names: Vec<String> = (0..20).map(|i| format!("p.d.t{i}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let rt = rt();
+    let mut times: Vec<Duration> = (0..12)
+        .map(|_| {
+            let t = Instant::now();
+            let a = rt.block_on(c.table_meta(&names, &MetaOptions::default()));
+            assert_eq!(a.len(), 20);
+            t.elapsed()
+        })
+        .collect();
+    times.sort();
+    let p95 = times[times.len() * 95 / 100];
+    assert!(p95 < DELAY * 3, "p95 {p95:?} for a {DELAY:?} round trip");
+}

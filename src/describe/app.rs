@@ -967,15 +967,14 @@ pub fn prune(args: &[String]) -> Result<String, String> {
     let (Some(dir), Some(days)) = (args.first(), args.get(1).and_then(|d| d.parse().ok())) else {
         return Err("usage: crab-describe prune STORE_DIR DAYS".into());
     };
-    use crate::describe::lifecycle::Regen;
     let (p, regen) =
         crate::describe::lifecycle::prune(dir, days).map_err(|e| format!("{dir}: {e}"))?;
     Ok(match regen {
-        Regen::Done => format!("{dir} could not be read and was regenerated; nothing to prune\n"),
-        Regen::Pending => format!(
+        crate::describe::lifecycle::Regen::Done => format!("{dir} could not be read and was regenerated; nothing to prune\n"),
+        crate::describe::lifecycle::Regen::Pending => format!(
             "{dir} could not be read and another process holds it: regenerate_pending, nothing pruned\n"
         ),
-        Regen::No => format!("pruned {} tables, {} columns from {dir}\n", p.tables, p.columns),
+        crate::describe::lifecycle::Regen::No => format!("pruned {} tables, {} columns from {dir}\n", p.tables, p.columns),
     })
 }
 

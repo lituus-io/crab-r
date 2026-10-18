@@ -339,9 +339,9 @@ pub fn open_or_regenerate_cfg(dir: impl AsRef<Path>, cfg: Config) -> Result<Open
 fn open_with(dir: &Path, cfg: Config, files: &impl Files) -> Result<Opened, OpenError> {
     match Store::open_or_create(dir, cfg) {
         Ok(s) if !legacy_ids(&s) => return Ok(Opened::Ready(s)),
-        Ok(_) => {}
         Err(e) if !damaged(dir, &e) => return Err(e.into()),
-        Err(_) => {}
+        // Keyed by the old spelling, or damaged: rebuilt below.
+        Ok(_) | Err(_) => {}
     }
     {
         // Refused before the lock file is touched: a link is never followed.

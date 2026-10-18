@@ -87,9 +87,18 @@ arguments; see [`bindings/python`](bindings/python/README.md).
 
 ```python
 import crab_r
-report = crab_r.describe("my-project.mart.orders", upstream=1, store="state")
-print(crab_r.lookup("state", "my-project.mart.orders.status"))
+report = crab_r.describe("my-project.mart.orders", upstream=1, store="state", access_token=token)
+print(crab_r.lookup("state", "my-project.mart.orders.status", budget_tokens=500))
+
+# Metadata only: tables.get?view=BASIC under the MetadataGuard, one typed outcome per table.
+meta = crab_r.table_meta(["my-project.mart.orders"], omit_columns=["email"], access_token=token)
+# Drafts from that metadata with no Google client at all (an OpenAI-compatible model).
+drafts = crab_r.describe_offline("state", meta, openai_url=url, openai_model=m, openai_key_env="KEY",
+                                 price_input_usd_per_mtok=0.15, price_output_usd_per_mtok=0.6)
 ```
+
+`table_meta_async` and `describe_offline_async` are awaitables on one
+process-wide runtime; cancelling one cancels its requests.
 
 ## Layout
 

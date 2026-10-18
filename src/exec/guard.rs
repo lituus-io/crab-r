@@ -444,9 +444,9 @@ mod tests {
         assert!(!ok(Method::Delete, &format!("{l}/processes/x")));
         assert!(!ok(Method::Get, "https://storage.googleapis.com/storage/v1/b/x/o/y?alt=media"));
         assert!(!ok(Method::Get, "http://metadata.google.internal/computeMetadata/v1/"));
-        assert!(!MetadataGuard::default()
+        assert!(MetadataGuard::default()
             .check(Method::Get, &Url::parse(&format!("{b}/queries/job_mine")).unwrap())
-            .is_ok());
+            .is_err());
     }
 
     #[test]

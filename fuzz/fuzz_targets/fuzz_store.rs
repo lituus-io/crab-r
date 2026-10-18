@@ -51,7 +51,7 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!(out.starts_with(lifecycle::REGENERATE_NEEDED), needed, "{cmd}");
         }
     }
-    if let Ok((store, _)) = lifecycle::open_or_regenerate(d) {
+    if let Some(store) = lifecycle::open_or_regenerate(d).ok().and_then(lifecycle::Opened::store) {
         let _ = state::load(&store);
         assert!(!lifecycle::regenerate_needed(d), "an opened store reads");
     }

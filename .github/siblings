@@ -4,5 +4,5 @@
 # Sibling repositories this one builds against, cloned beside the checkout
 # at these exact refs (scripts/fetch-siblings.sh). Bumped with each release.
 graph-r v0.6.0
-link-r v0.4.3
-objstore-r v0.3.0
+link-r feat-v0.4.4
+objstore-r feat-v0.4.0

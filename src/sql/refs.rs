@@ -410,8 +410,10 @@ impl<'p> Walker<'p, '_> {
         let mut kids = Vec::new();
         while let Some(x) = stack.pop() {
             match self.ast.exprs[x] {
-                Expr::Exists(q) | Expr::Subquery(q) | Expr::ArrayQuery(q) => self.query(q),
-                Expr::InQuery { q, .. } => self.query(q),
+                Expr::Exists(q)
+                | Expr::Subquery(q)
+                | Expr::ArrayQuery(q)
+                | Expr::InQuery { q, .. } => self.query(q),
                 Expr::Call(c) => {
                     if let Some(w) = self.ast.calls[c].over {
                         self.window(w);

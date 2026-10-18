@@ -129,7 +129,7 @@ impl<'a> Offline<'a> {
 
     /// A table the store holds, as a table resource: its description and
     /// its columns' types and descriptions.
-    fn from_store(&self, p: &str, d: &str, t: &str) -> Option<TableMeta> {
+    fn store_table(&self, p: &str, d: &str, t: &str) -> Option<TableMeta> {
         let snap = self.store?.snapshot();
         let tkey = UrlKey::of(UriBuf::new().table(p, d, t));
         let node = snap.node(tkey)?;
@@ -211,7 +211,7 @@ impl TableMetadata for Offline<'_> {
     ) -> Self::Get<'b> {
         let fqn = format!("{}.{dataset}.{table}", crate::base::key::canonical_project(project));
         let hit =
-            self.metas.get(&fqn).cloned().or_else(|| self.from_store(project, dataset, table));
+            self.metas.get(&fqn).cloned().or_else(|| self.store_table(project, dataset, table));
         ready(Ok(hit))
     }
     fn table_patch<'b>(

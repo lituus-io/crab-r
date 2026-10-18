@@ -9,7 +9,6 @@ import asyncio
 import http.server
 import json
 import pathlib
-import resource
 import select
 import socket
 import socketserver
@@ -212,6 +211,7 @@ def test_the_interpreter_runs_while_rust_works(monkeypatch):
 
 
 def test_memory_is_flat_over_ten_thousand_calls(tmp_path):
+    resource = pytest.importorskip("resource")
     store = str(tmp_path / "s")
     crab_r.ingest_lineage(store, json.loads((_EXPORT / "nodes.json").read_text()),
                           json.loads((_EXPORT / "edges.json").read_text()))

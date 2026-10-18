@@ -306,7 +306,7 @@ pub fn answer(raw: &[u8], opts: &MetaOptions<'_>) -> crate::base::Result<String>
                                 Event::ObjectEnd => break,
                                 Event::Key(q) if q.eq_plain("query") => match s.expect()? {
                                     Event::Str(v) => {
-                                        view_sql = Some(v.decode(&mut buf)?.to_owned())
+                                        view_sql = Some(v.decode(&mut buf)?.to_owned());
                                     }
                                     other => s.skip(other)?,
                                 },
@@ -458,16 +458,15 @@ fn fields_array<'s>(
         return Err(crate::base::Error::json("fields is not an array"));
     }
     let mut buf = String::new();
-    // Each element: its source range, and its rendering when it changed
-    // (`None` inside: dropped).
-    let mut elems: Vec<(Range<usize>, Option<Option<String>>)> = Vec::new();
+    // Each element: its source range, and what becomes of it.
+    let mut elems: Vec<(Range<usize>, Render)> = Vec::new();
     loop {
         let before = s.offset();
         let ev = s.expect()?;
         match ev {
             Event::ArrayEnd => break,
             Event::ObjectStart => {
-                let mut f = Field {
+                let mut fld = Field {
                     range: value_start(text, before)..0,
                     path: None,
                     description: None,
@@ -482,7 +481,7 @@ fn fields_array<'s>(
                             if k.eq_plain("name") {
                                 if let Event::Str(n) = v {
                                     let n = n.decode(&mut buf)?.to_ascii_lowercase();
-                                    f.path = Some(if prefix.is_empty() {
+                                    fld.path = Some(if prefix.is_empty() {
                                         n
                                     } else {
                                         format!("{prefix}.{n}")
@@ -492,12 +491,12 @@ fn fields_array<'s>(
                                 if let Event::Str(d) = v {
                                     let d = d.decode(&mut buf)?.to_owned();
                                     s.skip(v)?;
-                                    f.description = Some((value_start(text, at)..s.offset(), d));
+                                    fld.description = Some((value_start(text, at)..s.offset(), d));
                                     continue;
                                 }
                             } else if k.eq_plain("fields") && v == Event::ArrayStart {
                                 s.skip(v)?;
-                                f.nested = Some(value_start(text, at)..s.offset());
+                                fld.nested = Some(value_start(text, at)..s.offset());
                                 continue;
                             }
                             s.skip(v)?;
@@ -505,18 +504,18 @@ fn fields_array<'s>(
                         _ => return Err(crate::base::Error::json("expected key")),
                     }
                 }
-                f.range.end = s.offset();
-                let rendered = field(text, &f, depth, st)?;
-                elems.push((f.range.clone(), rendered));
+                fld.range.end = s.offset();
+                let rendered = field(text, &fld, depth, st)?;
+                elems.push((fld.range.clone(), rendered));
             }
             other => {
                 // Not a field object: kept as it is.
                 s.skip(other)?;
-                elems.push((value_start(text, before)..s.offset(), None));
+                elems.push((value_start(text, before)..s.offset(), Render::Same));
             }
         }
     }
-    if elems.iter().all(|(_, r)| r.is_none()) {
+    if elems.iter().all(|(_, r)| matches!(r, Render::Same)) {
         return Ok(Cow::Borrowed(&src[range]));
     }
     let mut out = String::with_capacity(text.len());
@@ -524,9 +523,9 @@ fn fields_array<'s>(
     let mut first = true;
     for (r, rendered) in &elems {
         let piece = match rendered {
-            None => &text[r.clone()],
-            Some(None) => continue,
-            Some(Some(t)) => t.as_str(),
+            Render::Same => &text[r.clone()],
+            Render::Drop => continue,
+            Render::New(t) => t.as_str(),
         };
         if !first {
             out.push(',');
@@ -538,18 +537,27 @@ fn fields_array<'s>(
     Ok(Cow::Owned(out))
 }
 
-/// One field: `None` kept as it is, `Some(None)` dropped, `Some(Some(t))`
-/// kept as `t`.
+/// What becomes of one field.
+enum Render {
+    /// Kept as it is.
+    Same,
+    /// Removed.
+    Drop,
+    /// Kept, as this text.
+    New(String),
+}
+
+/// One field's fate.
 fn field(
     text: &str,
     f: &Field,
     depth: usize,
     st: &mut TrimState<'_>,
-) -> crate::base::Result<Option<Option<String>>> {
+) -> crate::base::Result<Render> {
     let omitted = f.path.as_ref().is_some_and(|p| st.omit.iter().any(|o| o == p));
     if omitted || depth > st.limits.max_depth || st.columns >= st.limits.max_columns {
         st.omitted += 1;
-        return Ok(Some(None));
+        return Ok(Render::Drop);
     }
     st.columns += 1;
     let mut edits: Vec<(Range<usize>, String)> = Vec::new();
@@ -569,7 +577,7 @@ fn field(
         }
     }
     if edits.is_empty() {
-        return Ok(None);
+        return Ok(Render::Same);
     }
     edits.sort_by_key(|(r, _)| r.start);
     let mut out = String::with_capacity(f.range.len());
@@ -580,7 +588,7 @@ fn field(
         at = r.end;
     }
     out.push_str(&text[at..f.range.end]);
-    Ok(Some(Some(out)))
+    Ok(Render::New(out))
 }
 
 #[cfg(test)]
