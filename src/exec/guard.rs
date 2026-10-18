@@ -382,6 +382,35 @@ mod tests {
     }
 
     #[test]
+    fn crab_rs_own_metadata_queries_pass() {
+        use crate::describe::producers::{
+            jobs_projection_sql, jobs_query, jobs_query_from_view, JobsConfig,
+        };
+        let cfg = JobsConfig::new(vec!["p".into()], "us");
+        let ds = ["p.mart".to_owned()];
+        let mut all = vec![
+            jobs_projection_sql("p", "us", 30).unwrap(),
+            jobs_query("p", &cfg, &ds).unwrap(),
+            jobs_query_from_view("p", "ops", &cfg, &ds).unwrap(),
+        ];
+        let mut sc = crate::catalog::SyncConfig::new("p", "us");
+        all.extend(
+            crate::catalog::sync::sync_queries(&sc).unwrap().into_iter().filter(|q| !q.is_empty()),
+        );
+        sc.datasets = Some(vec!["mart".into()]);
+        sc.dataset_scoped = true;
+        all.extend(
+            crate::catalog::sync::sync_queries(&sc).unwrap().into_iter().filter(|q| !q.is_empty()),
+        );
+        for q in &all {
+            assert_eq!(g().check_sql(q), Ok(()), "{q}");
+        }
+        // The view lives in the graph's `ops`: another dataset is refused.
+        let other = jobs_query_from_view("p", "mart", &cfg, &ds).unwrap();
+        assert!(g().check_sql(&other).is_err());
+    }
+
+    #[test]
     fn project_scoped_graph_datasets() {
         let ds = [DatasetRef { project: Some("graph-p"), dataset: "infra" }];
         let guard = MetadataGuard::new(&ds, None);

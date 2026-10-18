@@ -162,12 +162,7 @@ impl DescribeConfig {
             targets,
             upstream: 0,
             region: region.to_owned(),
-            jobs: JobsConfig {
-                job_projects: vec![jobs_project.to_owned()],
-                region: region.to_ascii_lowercase(),
-                lookback_days: 90,
-                max_bytes_billed: 5 << 30,
-            },
+            jobs: JobsConfig::new(vec![jobs_project.to_owned()], region),
             profile: true,
             runner: RunnerConfig::default(),
             max_rounds: 2,
