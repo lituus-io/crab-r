@@ -18,7 +18,9 @@ def describe(*targets: str, sql: str | None = None, **options: Any) -> dict[str,
     OpenAI-compatible model with `openai_url=`, `openai_model=` and
     `openai_key_env=` (the NAME of the variable holding the key, never the
     key), `openai_stream=True`, `price_input_usd_per_mtok=`,
-    `price_output_usd_per_mtok=`. Progress goes to the `crab_r` logger. Raises ValueError for invalid options, CrabError
+    `price_output_usd_per_mtok=`. Credentials: `access_token=` (used as given; nothing is discovered and the
+    metadata server is never asked), else Application Default Credentials with the metadata server forbidden
+    unless `metadata_server=True`. Progress goes to the `crab_r` logger. Raises ValueError for invalid options, CrabError
     when the run fails. Returns the report; its `"regenerated"` is True when `store=` could not be read and was rebuilt
     empty (nothing reused, only what this run described recorded).
     """
@@ -36,27 +38,67 @@ def prune(store: str, max_age_days: int) -> dict[str, Any]:
 
     One transaction and one compaction however many go; nothing is written when nothing is that old, and pinned nodes
     stay. A store that cannot be read is regenerated instead. Returns `{"tables": int, "columns": int,
-    "regenerated": bool}`. Raises CrabError when the store cannot be opened (locked, a symbolic link, ...).
+    "regenerated": bool, "regenerate_pending": bool}` (pending: it needs regenerating but another process holds
+    its files; nothing was changed). Raises CrabError when the store cannot be opened (locked, a symbolic link, ...).
     """
 
-def table(store: str, name: str) -> str:
+# Every lookup takes `budget_tokens=`: the answer then fits that many tokens (about four bytes each), whole lines
+# nearest first, ending `truncated: N more lines` when some did not fit.
+
+def table(store: str, name: str, budget_tokens: int | None = None) -> str:
     """A recorded table (`"p.d.t"` or `"bq://p/d/t"`): description, kind, producer, columns, lineage."""
 
-def lookup(store: str, column: str) -> str:
+def lookup(store: str, column: str, budget_tokens: int | None = None) -> str:
     """A recorded column (`"p.d.t.column"`, `"bq://p/d/t#column"` or `"bq://p/d/t/column"`): description, type,
     provenance."""
 
-def upstream(store: str, column: str, depth: int = 10) -> str:
+def upstream(store: str, column: str, depth: int = 10, budget_tokens: int | None = None) -> str:
     """Where a column's values come from; for a table name, the tables it reads."""
 
-def downstream(store: str, column: str, depth: int = 10) -> str:
+def downstream(store: str, column: str, depth: int = 10, budget_tokens: int | None = None) -> str:
     """What a column's values and rows feed; for a table name, the tables that read it."""
 
-def due(store: str, n: int = 20) -> str:
+def due(store: str, n: int = 20, budget_tokens: int | None = None) -> str:
     """The tables most overdue for a re-describe."""
 
-def pull(source: str, directory: str) -> str:
+def search(store: str, text: str, n: int = 20, budget_tokens: int | None = None) -> str:
+    """The recorded tables and columns best matching `text` (names and descriptions), ranked, within the budget."""
+
+def pull(source: str, directory: str, access_token: str | None = None, metadata_server: bool = False) -> str:
     """Fetch (or refresh) a published store into `directory`."""
+
+def table_meta(tables: list[str], include_view_sql: bool = False, omit_columns: list[str] | None = None,
+               access_token: str | None = None, metadata_server: bool = False) -> list[dict[str, Any]]:
+    """Exact metadata of `tables` (`"p.d.t"`), read at once through `tables.get?view=BASIC` (no statistics, no rows).
+
+    One dict per table, in order: `{"table", "available", "reason", ...}`. `reason` is `"ok"` (with `type`,
+    `location`, `description`, `labels`, `time_partitioning`, `range_partitioning`, `clustering`, `schema` — BigQuery's
+    own JSON with `omit_columns` removed, policy tags, collation, defaults and unknown members kept — `columns`,
+    `omitted`, `truncated_descriptions`, `etag`, and `view_sql` when asked), else one of `"no_access"`,
+    `"not_found"`, `"no_credentials"`, `"expired"`, `"unreachable"`, `"invalid_name"` with a `message`. At most
+    2,000 columns, 15 levels deep, 1,000-character descriptions. Never raises for a table; nothing is retried on a 4xx.
+    """
+
+async def table_meta_async(tables: list[str], include_view_sql: bool = False, omit_columns: list[str] | None = None,
+                           access_token: str | None = None, metadata_server: bool = False) -> list[dict[str, Any]]:
+    """`table_meta` as an awaitable on the shared runtime; cancelling it cancels the requests."""
+
+def describe_offline(store: str | None, catalog_metadata: list[dict[str, Any]] | str, **options: Any) -> dict[str, Any]:
+    """Draft descriptions for the tables of `catalog_metadata` (what `table_meta` returned) with no Google client.
+
+    The model is OpenAI-compatible (`openai_url=`, `openai_model=`, `openai_key_env=`, prices), reached through a
+    client that may contact only its own host and never a Google one. `store` is reused — unchanged tables are not
+    drafted again, its lineage and descriptions are inherited — and the drafts are recorded in it. Nothing is written
+    anywhere else. Returns the report; raises ValueError for invalid options, CrabError when the run fails.
+    """
+
+async def describe_offline_async(store: str | None, catalog_metadata: list[dict[str, Any]] | str,
+                                 **options: Any) -> dict[str, Any]:
+    """`describe_offline` as an awaitable on the shared runtime; cancelling it cancels the model's requests."""
+
+def jobs_projection_sql(jobs_project: str, region: str, lookback_days: int = 180) -> str:
+    """The one INFORMATION_SCHEMA.JOBS projection: the SQL the `ops.observed_lineage` and `ops.runs` views are
+    generated from. Raises ValueError for a project or region that is not a plain name."""
 
 def ingest_lineage(store: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[str, Any]:
     """Write a static lineage export's `nodes` and `edges`, as the export has them, into `store` (created when absent).
@@ -65,12 +107,14 @@ def ingest_lineage(store: str, nodes: list[dict[str, Any]], edges: list[dict[str
     Adds only — a description, type or edge already recorded is kept — and writes in one commit or none, so a
     repeat ingest of the same export writes nothing. Returns `{"committed": bool, "created": int, "updated": int,
     "edges": int, "skipped": {name: count}, "rejected": [{"side": "node" | "edge", "index": int, "reason": str}],
-    "regenerated": bool}` (`regenerated`: the store could not be read and was rebuilt empty first).
+    "regenerated": bool, "regenerate_pending": bool}` (`regenerated`: the store could not be read and was rebuilt
+    empty first; `regenerate_pending`: it needs that but another process holds its files, and nothing was written).
     Raises CrabError when the input is not JSON data or the store cannot be written.
     """
 
 def bq_id(name: str) -> str:
-    """Any spelling of a BigQuery name as a lineage export's id: `bq://p/d/t#column`. Raises ValueError."""
+    """Any spelling of a BigQuery name as a lineage export's id: `bq://p/d/t#column`, the project lowercased (a
+    domain-scoped `example.com:p` is one project; a `$partition` decorator is dropped). Raises ValueError."""
 
 def bq_path(name: str) -> str:
     """Any spelling of a BigQuery name in the path form `bq://p/d/t/column`, for stores that drop `#fragment`s.

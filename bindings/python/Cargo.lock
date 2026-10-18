@@ -119,10 +119,13 @@ dependencies = [
 
 [[package]]
 name = "crab-r-python"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "pyo3",
+ "pyo3-async-runtimes",
+ "tokio",
  "uu-crab-r",
+ "uu-graph-r",
  "uu-objstore-r",
 ]
 
@@ -667,6 +670,20 @@ dependencies = [
  "pyo3-build-config",
  "pyo3-ffi",
  "pyo3-macros",
+]
+
+[[package]]
+name = "pyo3-async-runtimes"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3ef68daa7316a3fac65e5e18b2203f010346de1c1c53456811a2624673ab046"
+dependencies = [
+ "futures-channel",
+ "futures-util",
+ "once_cell",
+ "pin-project-lite",
+ "pyo3",
+ "tokio",
 ]
 
 [[package]]
@@ -1279,7 +1296,7 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "uu-crab-r"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "uu-graph-r",
  "uu-link-r",
@@ -1299,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "uu-link-r"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bytes",
  "compact_str",
@@ -1316,7 +1333,7 @@ dependencies = [
 
 [[package]]
 name = "uu-objstore-r"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "futures-util",

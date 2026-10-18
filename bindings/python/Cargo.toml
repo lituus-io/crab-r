@@ -3,7 +3,7 @@
 
 [package]
 name = "crab-r-python"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"
@@ -21,7 +21,13 @@ pyo3 = { version = "0.29", features = ["extension-module", "abi3-py312"] }
 # `crab-describe` binary, so the two never drift.
 # Aliased to `crab` because this crate's own lib is `crab_r` (the module).
 crab = { package = "uu-crab-r", path = "../..", features = ["cli"] }
-objstore-r = { package = "uu-objstore-r", path = "../../../objstore-r", features = ["blocking"] }
+objstore-r = { package = "uu-objstore-r", path = "../../../objstore-r", features = ["http"] }
+graph-r = { package = "uu-graph-r", path = "../../../graph-r", default-features = false, features = ["store"] }
+# The one process-wide runtime every call shares (already in the tree
+# through objstore-r's HTTP stack; this names its multi-thread scheduler).
+tokio = { version = "1.40", default-features = false, features = ["rt-multi-thread", "sync"] }
+# Awaitables on that runtime; cancelling the Python future drops the Rust one.
+pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 
 # Detach from the parent workspace so the main `cargo test` never needs Python.
 [workspace]

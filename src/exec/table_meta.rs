@@ -206,6 +206,16 @@ pub async fn table_meta<T: Transport>(
     out
 }
 
+const INVALID: &str = "not a project.dataset.table name";
+
+/// `table`'s project, dataset and table, when it names a table.
+fn table_name(table: &str) -> Option<(&str, &str, &str)> {
+    BqName::parse(table)
+        .ok()
+        .filter(|n| n.level() == Level::Table)
+        .and_then(|n| Some((n.project, n.dataset?, n.table?)))
+}
+
 async fn one<T: Transport>(
     transport: &T,
     origin: &str,
@@ -717,9 +727,16 @@ impl<'g, T: objstore_r::token::TokenProvider> MetaClient<'g, T> {
     }
 }
 
-/// Every table answered `outcome`: what a batch gets when no client could
-/// be built (no credential, say).
+/// What a batch gets when no client could be built (no credential, say):
+/// `outcome` for every table, except `invalid_name` for a name that is not
+/// one.
 #[must_use]
 pub fn all_failed(tables: &[&str], outcome: Outcome, message: &str) -> Vec<TableAnswer> {
-    tables.iter().map(|t| TableAnswer::failed(t, outcome, message)).collect()
+    tables
+        .iter()
+        .map(|t| match table_name(t) {
+            Some(_) => TableAnswer::failed(t, outcome, message),
+            None => TableAnswer::failed(t, Outcome::InvalidName, INVALID),
+        })
+        .collect()
 }
