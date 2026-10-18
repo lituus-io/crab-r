@@ -197,10 +197,8 @@ fn unparsable_or_row_less_producers_are_reported() {
 #[test]
 fn the_jobs_query_is_valid_googlesql() {
     let cfg = crab_r::describe::producers::JobsConfig {
-        job_projects: vec![],
-        region: "us".into(),
         lookback_days: 30,
-        max_bytes_billed: 1 << 30,
+        ..crab_r::describe::producers::JobsConfig::new(vec![], "us")
     };
     let q =
         crab_r::describe::producers::jobs_query("my-project", &cfg, &["my-project.mart".into()])

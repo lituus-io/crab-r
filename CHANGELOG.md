@@ -4,6 +4,83 @@ All notable changes to crab-r are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0
+
+- **Built on uu-objstore-r 0.4.0 and uu-link-r 0.4.4** (graph-r 0.6.0 as
+  before). objstore-r 0.4 gives the request-policy generic `http::Client<T,
+  P: RequestPolicy>`, `Adc::from_access_token` and `MetadataPolicy::Forbid`.
+- **`sql::refs::referenced_tables`: the one answer to "which tables does this
+  SQL read".** A scoped walk of the parse tree: a CTE is visible where
+  BigQuery sees it (after its own body in a plain `WITH`, anywhere in its
+  `WITH RECURSIVE`, never outside the query that declares it), a path from
+  a range variable in scope is an array scan, `INFORMATION_SCHEMA` views and
+  `__TABLES__` are told apart, and a read the walk could not place is
+  reported. The describe pipeline's upstream expansion rests on it.
+- **`exec::guard::MetadataGuard`, the request policy for metadata reads.**
+  Only `tables.get?view=BASIC`, `datasets.get`, `jobs.query`, the results of
+  jobs this process issued (`OwnJobs`, recorded by the `Tracked`
+  transport) and Dataplex lineage reads. Every query body (objstore-r hands
+  each one to `check_query`) must be one query statement whose every read is
+  an `INFORMATION_SCHEMA` view, a meta-table, or a table in the graph
+  datasets (default `infra` and `ops`). DML, DDL, scripts, several
+  statements, `EXTERNAL_QUERY`, functions outside the built-in namespaces,
+  unqualified names (they would resolve against a request's
+  `defaultDataset`), array paths and unplaceable reads are refused.
+- **`exec::table_meta`: exact metadata, many tables at once, typed
+  outcomes.** One `tables.get?view=BASIC` per table, all in flight together
+  (twenty tables in about one round trip). Each table is `ok`, `no_access`,
+  `not_found`, `no_credentials`, `expired`, `unreachable` or
+  `invalid_name`; a batch never fails and nothing is repeated on a 4xx. The
+  schema is BigQuery's own bytes, spliced: `omit_columns` removed, at most
+  2,000 columns, 15 levels and 1,000-character descriptions, with policy
+  tags, collation, defaults and unknown members kept. `MetaClient` binds it
+  to the caller's credential under the guard.
+- **`describe::offline`: drafting from supplied metadata with no Google
+  client.** The `Offline` warehouse refuses every query and answers table
+  reads from the supplied metadata and the store; the store's column
+  lineage is the lineage source (pass-through and renamed columns inherit);
+  a view's SQL is its producer; unchanged tables are reused.
+  `app::run_offline` drives it with an OpenAI-compatible model whose client
+  (`ModelOnly`) reaches only the model's host, never a Google one, and
+  refuses `--apply`, `--publish` and `--lineage-location`.
+- **Credentials are the caller's.** `app::Credentials`: a supplied token is
+  used as is (nothing discovered, the metadata server never asked), else
+  discovery, with the metadata server forbidden under
+  `--no-metadata-server`. `app::pull` takes them.
+- **Identity follows the spec shared with pulumi-rs-yaml
+  (`sql_lineage::ids`).** `BqName` and every store key lowercase the
+  project, accept a domain-scoped `example.com:proj` in every spelling, and
+  drop a table's `$partition` decorator; `tests/data/ids_conformance.tsv`
+  holds the shared id strings. A store keyed by the old spelling (a project
+  with capitals) is regenerated through the lifecycle, and lookups answer
+  `regenerate_needed` until then.
+- **`producers::jobs_projection_sql`: the one `INFORMATION_SCHEMA.JOBS`
+  projection.** Per query job: its resource key
+  (`//bigquery.googleapis.com/projects/P/locations/L/jobs/J`), ids, state,
+  times, error reason and message, labels, destination and referenced
+  tables, the SQL and its shape, and a fingerprint of the principal (never
+  the address). `jobs_query` reads through it byte for byte, so the
+  `ops.observed_lineage` / `ops.runs` views generated from it cannot drift.
+  With `JobsConfig::ops_dataset`, discovery reads a project's
+  `observed_lineage` view and falls back to JOBS.
+- **Regeneration around a store another process maps (Windows, os error
+  1224).** `lifecycle::open_or_regenerate` now returns `Opened`: a data file
+  that cannot be deleted is renamed aside to a temporary the next
+  regeneration deletes, and the store is built fresh; when the rename is
+  refused too it is a soft `RegeneratePending`, never an error (ingest
+  reports `"regenerate_pending"`, `prune` returns `Regen`).
+- **Lookups within a token budget.** `app::lookup_within` answers inside a
+  graph-r `TokenBudget` (whole lines, then `truncated: N more lines`); a new
+  `search` lookup is graph-r's ranked, budgeted query.
+- **Python.** One lazily created process-wide multi-thread runtime replaces
+  a runtime per call. New `table_meta`, `table_meta_async`,
+  `describe_offline`, `describe_offline_async`, `jobs_projection_sql`,
+  `search`; every lookup takes `budget_tokens`; `describe` and `pull` take
+  `access_token=` and, without it, forbid the metadata server unless
+  `metadata_server=True` (**changed:** 0.4 fell through to it). The
+  awaitables use `pyo3-async-runtimes` (+78 KB on the macOS arm64 wheel);
+  cancelling one drops the run and its requests.
+
 ## 0.4.0
 
 - **Built on uu-graph-r 0.6.0, uu-objstore-r 0.3.0 and uu-link-r 0.4.3.**

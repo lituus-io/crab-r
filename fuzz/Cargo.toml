@@ -12,7 +12,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-crab-r = { package = "uu-crab-r", path = "..", features = ["dataplex", "cli"] }
+crab-r = { package = "uu-crab-r", path = "..", features = ["dataplex", "cli", "http"] }
 graph-r = { package = "uu-graph-r", path = "../../graph-r" }
 objstore-r = { package = "uu-objstore-r", path = "../../objstore-r" }
 
@@ -109,3 +109,17 @@ bench = false
 
 [workspace]
 members = ["."]
+
+[[bin]]
+name = "fuzz_guard"
+path = "fuzz_targets/fuzz_guard.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_table_meta"
+path = "fuzz_targets/fuzz_table_meta.rs"
+test = false
+doc = false
+bench = false

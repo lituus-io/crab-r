@@ -14,8 +14,13 @@
 //! sql://bigquery/{project}/{dataset}/{table}#{path}  column / nested field ("a.b.c")
 //! ```
 //!
-//! BigQuery project, dataset and table names are case-sensitive and stay as
-//! given; column and field names are case-insensitive and are lowercased.
+//! Identity follows one spec, shared with pulumi-rs-yaml's
+//! `sql_lineage::ids` (the lineage exports' ids) so ids from either side
+//! join: the **project is lowercased** (GCP project ids are lowercase; a
+//! domain-scoped `example.com:proj` is one project), dataset and table names
+//! are case-sensitive and stay as given (a `$partition` decorator is not
+//! part of a table's name), and column and field names are case-insensitive
+//! and lowercased.
 
 use std::fmt::Write as _;
 
@@ -54,28 +59,69 @@ impl UriBuf {
         Self { buf: String::with_capacity(128) }
     }
 
+    /// `prefix` then the project, lowercased.
+    fn start(&mut self, project: &str) {
+        self.buf.clear();
+        self.buf.push_str(BIGQUERY_PREFIX);
+        push_project(&mut self.buf, project);
+    }
+
     /// Canonical dataset URI.
     pub fn dataset(&mut self, project: &str, dataset: &str) -> &str {
-        self.buf.clear();
-        let _ = write!(self.buf, "{BIGQUERY_PREFIX}{project}/{dataset}");
+        self.start(project);
+        let _ = write!(self.buf, "/{dataset}");
         &self.buf
     }
 
     /// Canonical table URI.
     pub fn table(&mut self, project: &str, dataset: &str, table: &str) -> &str {
-        self.buf.clear();
-        let _ = write!(self.buf, "{BIGQUERY_PREFIX}{project}/{dataset}/{table}");
+        self.start(project);
+        let _ = write!(self.buf, "/{dataset}/{table}");
         &self.buf
     }
 
     /// Canonical column or nested-field URI; `path` is dot-separated and is
     /// lowercased because BigQuery column names are case-insensitive.
     pub fn column(&mut self, project: &str, dataset: &str, table: &str, path: &str) -> &str {
-        self.buf.clear();
-        let _ = write!(self.buf, "{BIGQUERY_PREFIX}{project}/{dataset}/{table}#");
+        self.start(project);
+        let _ = write!(self.buf, "/{dataset}/{table}#");
         self.buf.extend(path.chars().flat_map(char::to_lowercase));
         &self.buf
     }
+}
+
+/// Append `project` in its canonical spelling: lowercased.
+fn push_project(out: &mut String, project: &str) {
+    if project.chars().any(char::is_uppercase) {
+        out.extend(project.chars().flat_map(char::to_lowercase));
+    } else {
+        out.push_str(project);
+    }
+}
+
+/// `project` in its canonical spelling (lowercased); borrowed when it
+/// already is.
+#[must_use]
+pub fn canonical_project(project: &str) -> std::borrow::Cow<'_, str> {
+    if project.chars().any(char::is_uppercase) {
+        std::borrow::Cow::Owned(project.chars().flat_map(char::to_lowercase).collect())
+    } else {
+        std::borrow::Cow::Borrowed(project)
+    }
+}
+
+/// Split a dotted reference into its project and the rest, keeping a
+/// domain-scoped project (`example.com:proj.d.t` → `example.com:proj`,
+/// `d.t`) whole: the same rule as pulumi-rs-yaml's `split_project`.
+#[must_use]
+pub fn split_project(reference: &str) -> Option<(&str, &str)> {
+    if let Some(colon) = reference.find(':') {
+        if reference[..colon].contains('.') {
+            let dot = reference[colon..].find('.')? + colon;
+            return Some((&reference[..dot], &reference[dot + 1..]));
+        }
+    }
+    reference.split_once('.')
 }
 
 /// Split `project.dataset.table` into its parts. Projects may contain dots
@@ -165,12 +211,17 @@ impl std::error::Error for NameError {}
 ///   a column's `#` id would collapse onto its table).
 /// - `project.dataset.table.column`: the warehouse's own.
 ///
-/// Every component is refused unless it is letters, digits, `_` and `-`
-/// (and `:` in a project): no dot, so the dotted spelling has exactly one
-/// split (a domain-scoped `example.com:p` project or a nested `a.b` field
-/// path is refused rather than guessed), and nothing that could close a
-/// quoted identifier or a path segment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Every component is refused unless it is letters, digits, `_` and `-`,
+/// and nothing that could close a quoted identifier or a path segment. A
+/// project may be domain-scoped (`example.com:p`): dots before its one `:`
+/// only, so the dotted spelling still has exactly one split. A nested
+/// `a.b` field path is refused rather than guessed.
+///
+/// Identity follows the shared spec (see the module docs): two names are
+/// equal when they differ only in the case of the project (or a column),
+/// every spelling emits the project lowercased, and a table's `$partition`
+/// decorator is dropped on parse.
+#[derive(Clone, Copy, Debug)]
 pub struct BqName<'a> {
     /// Project.
     pub project: &'a str,
@@ -182,6 +233,26 @@ pub struct BqName<'a> {
     pub column: Option<&'a str>,
 }
 
+impl PartialEq for BqName<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        let lower = |s: &str| s.chars().flat_map(char::to_lowercase).collect::<String>();
+        let column = |a: Option<&str>, b: Option<&str>| match (a, b) {
+            (Some(a), Some(b)) => lower(a) == lower(b),
+            (a, b) => a == b,
+        };
+        lower(self.project) == lower(other.project)
+            && self.dataset == other.dataset
+            && self.table == other.table
+            && column(self.column, other.column)
+    }
+}
+
+impl Eq for BqName<'_> {}
+
+fn plain(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-'
+}
+
 fn component(s: &str, project: bool) -> Result<&str, NameError> {
     if s.is_empty() {
         return Err(NameError::Malformed);
@@ -189,11 +260,30 @@ fn component(s: &str, project: bool) -> Result<&str, NameError> {
     if s.len() > MAX_COMPONENT {
         return Err(NameError::TooLong);
     }
-    if s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || (project && c == ':')) {
+    let ok = if project {
+        // `domain:project`: a dotted domain, one colon, a plain project.
+        match s.split_once(':') {
+            Some((domain, p)) => {
+                !domain.is_empty()
+                    && !p.is_empty()
+                    && domain.split('.').all(|l| !l.is_empty() && l.chars().all(plain))
+                    && p.chars().all(plain)
+            }
+            None => s.chars().all(plain),
+        }
+    } else {
+        s.chars().all(plain)
+    };
+    if ok {
         Ok(s)
     } else {
         Err(NameError::BadComponent)
     }
+}
+
+/// A table name without its `$partition` decorator (`t$20240101` → `t`).
+fn undecorated(t: &str) -> &str {
+    t.split_once('$').map_or(t, |(name, _)| name)
 }
 
 impl<'a> BqName<'a> {
@@ -222,8 +312,23 @@ impl<'a> BqName<'a> {
         Self::from_parts(parts[0].unwrap_or(""), parts[1], parts[2], column)
     }
 
-    /// `project.dataset.table.column`: one to four components.
+    /// `project.dataset.table.column`: one to four components; a
+    /// domain-scoped project keeps its dots ([`split_project`]).
     fn parse_dotted(s: &'a str) -> Result<Self, NameError> {
+        if let Some(colon) = s.find(':').filter(|&c| s[..c].contains('.')) {
+            if !s[colon..].contains('.') {
+                // A domain-scoped project alone.
+                return Self::from_parts(s, None, None, None);
+            }
+        }
+        if let Some((project, rest)) = split_project(s).filter(|(p, _)| p.contains(':')) {
+            let mut parts = rest.split('.');
+            let parts = [parts.next(), parts.next(), parts.next(), parts.next()];
+            if parts[3].is_some() {
+                return Err(NameError::Malformed);
+            }
+            return Self::from_parts(project, parts[0], parts[1], parts[2]);
+        }
         let mut parts = s.split('.');
         let parts = [parts.next(), parts.next(), parts.next(), parts.next(), parts.next()];
         if parts[4].is_some() {
@@ -245,7 +350,7 @@ impl<'a> BqName<'a> {
         Ok(Self {
             project: component(project, true)?,
             dataset: dataset.map(|d| component(d, false)).transpose()?,
-            table: table.map(|t| component(t, false)).transpose()?,
+            table: table.map(|t| component(undecorated(t), false)).transpose()?,
             column: column.map(|c| component(c, false)).transpose()?,
         })
     }
@@ -267,7 +372,7 @@ impl<'a> BqName<'a> {
     pub fn bq_id(&self) -> String {
         let mut out = String::with_capacity(BQ_SCHEME.len() + 64);
         out.push_str(BQ_SCHEME);
-        out.push_str(self.project);
+        push_project(&mut out, self.project);
         for (sep, part) in [('/', self.dataset), ('/', self.table)] {
             if let Some(p) = part {
                 out.push(sep);
@@ -298,7 +403,7 @@ impl<'a> BqName<'a> {
     #[must_use]
     pub fn dotted(&self) -> String {
         let mut out = String::with_capacity(64);
-        out.push_str(self.project);
+        push_project(&mut out, self.project);
         for part in [self.dataset, self.table].into_iter().flatten() {
             out.push('.');
             out.push_str(part);
@@ -423,6 +528,30 @@ mod tests {
     }
 
     #[test]
+    fn projects_are_canonical_lowercase_and_may_be_domain_scoped() {
+        let mut b = UriBuf::new();
+        assert_eq!(b.table("My-Proj", "DS", "T"), "sql://bigquery/my-proj/DS/T");
+        assert_eq!(table_key("My-Proj", "d", "t"), table_key("my-proj", "d", "t"));
+        assert_ne!(table_key("p", "D", "t"), table_key("p", "d", "t"), "datasets keep case");
+        let n = BqName::parse("Example.com:Proj.DS.T$20240101.Col").unwrap();
+        assert_eq!((n.project, n.dataset, n.table), ("Example.com:Proj", Some("DS"), Some("T")));
+        assert_eq!(n.bq_id(), "bq://example.com:proj/DS/T#col");
+        assert_eq!(n.dotted(), "example.com:proj.DS.T.col");
+        assert_eq!(n, BqName::parse("bq://example.com:proj/DS/T#COL").unwrap());
+        assert_ne!(n, BqName::parse("bq://example.com:proj/ds/T#col").unwrap());
+        assert_eq!(n.uri(&mut b), Some("sql://bigquery/example.com:proj/DS/T#col"));
+        assert_eq!(split_project("example.com:p.d.t"), Some(("example.com:p", "d.t")));
+        assert_eq!(split_project("p.d.t"), Some(("p", "d.t")));
+        let p = BqName::parse("a.b:c").unwrap();
+        assert_eq!(
+            (p.level(), p.dotted(), p.bq_id()),
+            (Level::Project, "a.b:c".into(), "bq://a.b:c".into())
+        );
+        assert_eq!(canonical_project("P"), "p");
+        assert!(matches!(canonical_project("p"), std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
     fn ambiguous_or_malformed_names_are_refused() {
         use NameError::{BadComponent, Malformed, TooLong};
         for (s, e) in [
@@ -439,7 +568,11 @@ mod tests {
             ("bq://p#c", Malformed),
             ("bq://p/d/t#", Malformed),
             ("bq://p/d/t#a.b", BadComponent),
-            ("bq://example.com:p/d/t", BadComponent),
+            ("bq://example..com:p/d/t", BadComponent),
+            ("bq://example.com:/d/t", BadComponent),
+            ("bq://:p/d/t", BadComponent),
+            ("bq://a:b:c/d/t", BadComponent),
+            ("example.com:p.d.t.c.x", Malformed),
             ("bq://p/d/t#a#b", BadComponent),
             ("p.d.t`; DROP TABLE x; --", BadComponent),
             ("bq://p/d/t'", BadComponent),

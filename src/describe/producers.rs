@@ -70,6 +70,25 @@ pub struct JobsConfig {
     pub lookback_days: u32,
     /// Byte cap for the JOBS query.
     pub max_bytes_billed: u64,
+    /// The dataset holding a project's `observed_lineage` view (generated
+    /// from [`jobs_projection_sql`]), when the project has one: job history
+    /// is then read from the view, pre-pruned, instead of re-scanning JOBS,
+    /// falling back to JOBS when the view cannot be read. `None` reads JOBS.
+    pub ops_dataset: Option<String>,
+}
+
+impl JobsConfig {
+    /// Settings for `job_projects` in `region`: 90 days, 5 GiB, JOBS itself.
+    #[must_use]
+    pub fn new(job_projects: Vec<String>, region: &str) -> Self {
+        Self {
+            job_projects,
+            region: region.to_ascii_lowercase(),
+            lookback_days: 90,
+            max_bytes_billed: 5 << 30,
+            ops_dataset: None,
+        }
+    }
 }
 
 fn valid_name(s: &str) -> bool {
@@ -78,47 +97,122 @@ fn valid_name(s: &str) -> bool {
         && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
 }
 
-/// The JOBS query for tables of `datasets` (each `project.dataset`), or
-/// `None` when a name is not a plain identifier (never interpolated).
+/// The view a project's `ops` dataset holds, generated from
+/// [`jobs_projection_sql`].
+pub const OBSERVED_LINEAGE_VIEW: &str = "observed_lineage";
+
+/// A BigQuery job's resource key, as the deploy and the audit logs spell it:
+/// `//bigquery.googleapis.com/projects/{project}/locations/{location}/jobs/{job}`.
 #[must_use]
-pub fn jobs_query(jobs_project: &str, cfg: &JobsConfig, datasets: &[String]) -> Option<String> {
-    if !valid_name(jobs_project)
-        || !valid_name(&cfg.region)
-        || !datasets.iter().all(|d| valid_name(d) && d.contains('.'))
-        || datasets.is_empty()
-    {
+pub fn bigquery_job_key(project: &str, location: &str, job: &str) -> String {
+    format!("//bigquery.googleapis.com/projects/{project}/locations/{location}/jobs/{job}")
+}
+
+/// A JOBS region as the job's location: the multi-regions `US` and `EU`
+/// upper-case, a region as written (lower-case).
+fn location_of(region: &str) -> String {
+    let r = region.to_ascii_lowercase();
+    if matches!(r.as_str(), "us" | "eu") {
+        r.to_ascii_uppercase()
+    } else {
+        r
+    }
+}
+
+/// The one `INFORMATION_SCHEMA.JOBS` projection, as SQL text: every query
+/// job of `jobs_project` in `region` over the last `lookback_days` (1–180),
+/// one row per job. The `ops.observed_lineage` and `ops.runs` views are
+/// generated from this text and [`jobs_query`] reads through it, so a view
+/// and the client never disagree on a column.
+///
+/// It projects only what lineage and run state need: the job's resource key
+/// ([`bigquery_job_key`]), ids, state, times, error reason and message,
+/// labels, the destination table, the referenced tables, the SQL (a script
+/// child's from its parent script) and its shape fingerprint, and a
+/// fingerprint of the principal (never the address). `None` when a name is
+/// not a plain identifier (never interpolated).
+#[must_use]
+pub fn jobs_projection_sql(jobs_project: &str, region: &str, lookback_days: u32) -> Option<String> {
+    if !valid_name(jobs_project) || !valid_name(region) || region.contains('.') {
+        return None;
+    }
+    let source = format!(
+        "`{jobs_project}`.`region-{}`.INFORMATION_SCHEMA.JOBS",
+        region.to_ascii_lowercase()
+    );
+    let days = lookback_days.clamp(1, 180);
+    let window =
+        format!("creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)");
+    let location = location_of(region);
+    Some(format!(
+        "SELECT CONCAT('//bigquery.googleapis.com/projects/', c.project_id, '/locations/{location}/jobs/', c.job_id) AS job_key, \
+c.job_id, c.project_id AS job_project, c.parent_job_id, c.state, c.statement_type AS st, c.creation_time AS ts, \
+c.start_time, c.end_time, c.error_result.reason AS error_code, c.error_result.message AS error_message, c.labels, \
+c.destination_table.project_id AS project, c.destination_table.dataset_id AS dataset, \
+c.destination_table.table_id AS tbl, c.referenced_tables, COALESCE(s.query, c.query) AS q, \
+FARM_FINGERPRINT(c.user_email) AS who, \
+FARM_FINGERPRINT(REGEXP_REPLACE(REGEXP_REPLACE(COALESCE(s.query, c.query), r\"'[^']*'\", '?'), r'[0-9]+', '0')) AS shape \
+FROM {source} c LEFT JOIN (SELECT job_id, query FROM {source} WHERE {window} AND statement_type = 'SCRIPT') s \
+ON s.job_id = c.parent_job_id WHERE c.{window} AND c.job_type = 'QUERY'"
+    ))
+}
+
+/// Writers of the tables of `datasets` (each `project.dataset`) from a
+/// relation with [`jobs_projection_sql`]'s columns, as SQL text.
+fn writers_over(relation: &str, datasets: &[String]) -> Option<String> {
+    if !datasets.iter().all(|d| valid_name(d) && d.contains('.')) || datasets.is_empty() {
         return None;
     }
     let filter: Vec<String> = datasets
         .iter()
         .map(|d| {
             let (p, ds) = d.split_once('.').unwrap_or(("", d));
-            format!(
-                "(c.destination_table.project_id = '{p}' AND c.destination_table.dataset_id = '{ds}')"
-            )
+            format!("(project = '{p}' AND dataset = '{ds}')")
         })
         .collect();
     Some(format!(
-        "WITH s AS (SELECT job_id, query FROM `{jobs_project}`.`region-{region}`.INFORMATION_SCHEMA.JOBS \
-WHERE creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY) AND statement_type = 'SCRIPT'), \
-j AS (SELECT c.destination_table.project_id AS project, c.destination_table.dataset_id AS dataset, \
-c.destination_table.table_id AS tbl, c.statement_type AS st, COALESCE(s.query, c.query) AS q, c.user_email AS who, \
-c.creation_time AS ts, FARM_FINGERPRINT(REGEXP_REPLACE(REGEXP_REPLACE(COALESCE(s.query, c.query), r\"'[^']*'\", '?'), \
-r'[0-9]+', '0')) AS shape \
-FROM `{jobs_project}`.`region-{region}`.INFORMATION_SCHEMA.JOBS c LEFT JOIN s ON s.job_id = c.parent_job_id \
-WHERE c.creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY) AND c.job_type = 'QUERY' \
-AND c.state = 'DONE' AND c.error_result IS NULL AND c.statement_type IN ('CREATE_TABLE_AS_SELECT', 'INSERT', \
+        "WITH j AS (SELECT project, dataset, tbl, st, q, who, ts, shape FROM {relation} \
+WHERE state = 'DONE' AND error_code IS NULL AND st IN ('CREATE_TABLE_AS_SELECT', 'INSERT', \
 'MERGE', 'CREATE_VIEW', 'CREATE_MATERIALIZED_VIEW', 'SELECT', 'UPDATE') AND ({filters})), \
 w AS (SELECT project, dataset, tbl, shape, COUNT(*) AS writes, COUNT(DISTINCT who) AS writers, \
 UNIX_MILLIS(MIN(ts)) AS first_ms, UNIX_MILLIS(MAX(ts)) AS last_ms, \
 ARRAY_AGG(STRUCT(st, q) ORDER BY ts DESC LIMIT 1)[OFFSET(0)] AS latest FROM j GROUP BY project, dataset, tbl, shape) \
 SELECT project, dataset, tbl, writes, writers, first_ms, last_ms, latest.st AS statement_type, latest.q AS query FROM w \
 QUALIFY ROW_NUMBER() OVER (PARTITION BY project, dataset, tbl ORDER BY IF(latest.st = 'UPDATE', 1, 0), last_ms DESC) <= {max}",
-        region = cfg.region.to_ascii_lowercase(),
-        days = cfg.lookback_days.clamp(1, 180),
         filters = filter.join(" OR "),
         max = MAX_WRITERS,
     ))
+}
+
+/// The JOBS query for tables of `datasets` (each `project.dataset`), read
+/// through [`jobs_projection_sql`], or `None` when a name is not a plain
+/// identifier (never interpolated).
+#[must_use]
+pub fn jobs_query(jobs_project: &str, cfg: &JobsConfig, datasets: &[String]) -> Option<String> {
+    let projection = jobs_projection_sql(jobs_project, &cfg.region, cfg.lookback_days)?;
+    writers_over(&format!("({projection})"), datasets)
+}
+
+/// The same query over a project's `observed_lineage` view in `ops_dataset`
+/// (already the projection; only the lookback window is applied here).
+#[must_use]
+pub fn jobs_query_from_view(
+    jobs_project: &str,
+    ops_dataset: &str,
+    cfg: &JobsConfig,
+    datasets: &[String],
+) -> Option<String> {
+    if !valid_name(jobs_project) || !valid_name(ops_dataset) || ops_dataset.contains('.') {
+        return None;
+    }
+    let days = cfg.lookback_days.clamp(1, 180);
+    writers_over(
+        &format!(
+            "(SELECT * FROM `{jobs_project}`.`{ops_dataset}`.{OBSERVED_LINEAGE_VIEW} \
+WHERE ts >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY))"
+        ),
+        datasets,
+    )
 }
 
 /// Rank a table's writers: row-producing statements before UPDATEs, then
@@ -207,15 +301,30 @@ pub async fn discover<W: Warehouse>(
 ) -> (BTreeMap<String, Producer>, Vec<String>) {
     let mut out = BTreeMap::new();
     let mut warnings = Vec::new();
+    let opts = RunOpts {
+        max_bytes_billed: Some(cfg.max_bytes_billed),
+        max_rows: 100_000,
+        ..RunOpts::default()
+    };
     for jp in &cfg.job_projects {
+        // The project's ops view first, when it has one: pre-pruned, and
+        // the same columns.
+        if let Some(sql) =
+            cfg.ops_dataset.as_deref().and_then(|ops| jobs_query_from_view(jp, ops, cfg, datasets))
+        {
+            match w.run(&sql, opts).await {
+                Ok(r) => {
+                    decode(&r.batch, &mut out);
+                    continue;
+                }
+                Err(e) => warnings.push(format!(
+                    "job history view of {jp} unavailable ({e}); reading INFORMATION_SCHEMA.JOBS"
+                )),
+            }
+        }
         let Some(sql) = jobs_query(jp, cfg, datasets) else {
             warnings.push(format!("job history of {jp}: invalid project, region or dataset name"));
             continue;
-        };
-        let opts = RunOpts {
-            max_bytes_billed: Some(cfg.max_bytes_billed),
-            max_rows: 100_000,
-            ..RunOpts::default()
         };
         match w.run(&sql, opts).await {
             Ok(r) => decode(&r.batch, &mut out),
@@ -234,17 +343,32 @@ mod tests {
 
     #[test]
     fn query_shape_and_injection_guard() {
-        let cfg = JobsConfig {
-            job_projects: vec![],
-            region: "US".into(),
-            lookback_days: 999,
-            max_bytes_billed: 1 << 30,
-        };
+        let cfg = JobsConfig { lookback_days: 999, ..JobsConfig::new(vec![], "US") };
         let q =
             jobs_query("my-project", &cfg, &["my-project.mart".into(), "p2.raw".into()]).unwrap();
         assert!(q.contains("FROM `my-project`.`region-us`.INFORMATION_SCHEMA.JOBS"));
         assert!(q.contains("INTERVAL 180 DAY"), "clamped to the retention");
-        assert!(q.contains("(c.destination_table.project_id = 'my-project' AND c.destination_table.dataset_id = 'mart') OR (c.destination_table.project_id = 'p2' AND c.destination_table.dataset_id = 'raw')"));
+        assert!(q.contains(
+            "(project = 'my-project' AND dataset = 'mart') OR (project = 'p2' AND dataset = 'raw')"
+        ));
+        // The projection is the query's source, byte for byte.
+        let projection = jobs_projection_sql("my-project", "US", 999).unwrap();
+        assert!(q.contains(&format!("FROM ({projection})")));
+        assert!(projection.contains("'/locations/US/jobs/'"));
+        assert!(
+            !projection.contains("user_email AS")
+                && projection.contains("FARM_FINGERPRINT(c.user_email) AS who")
+        );
+        assert!(jobs_projection_sql("p`x", "us", 1).is_none());
+        assert!(jobs_projection_sql("p", "us.x", 1).is_none());
+        let v =
+            jobs_query_from_view("my-project", "ops", &cfg, &["my-project.mart".into()]).unwrap();
+        assert!(v.contains("FROM (SELECT * FROM `my-project`.`ops`.observed_lineage WHERE ts >= "));
+        assert!(jobs_query_from_view("p", "a.b", &cfg, &["p.d".into()]).is_none());
+        assert_eq!(
+            bigquery_job_key("p", "northamerica-northeast1", "job_1"),
+            "//bigquery.googleapis.com/projects/p/locations/northamerica-northeast1/jobs/job_1"
+        );
         let output = q.rsplit_once(") SELECT ").unwrap().1;
         assert!(
             !output.contains("who") && !output.contains("user_email"),

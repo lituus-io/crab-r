@@ -150,12 +150,14 @@ def test_prune_removes_what_is_older_than_the_ttl(tmp_path):
     store = str(tmp_path / "state")
     nodes, edges = _export()
     crab_r.ingest_lineage(store, nodes, edges)
-    assert crab_r.prune(store, 30) == {"tables": 0, "columns": 0, "regenerated": False}
+    assert crab_r.prune(store, 30) == {
+        "tables": 0, "columns": 0, "regenerated": False, "regenerate_pending": False}
     time.sleep(0.01)
     pruned = crab_r.prune(store, 0)
     assert pruned["tables"] > 0 and pruned["columns"] > 0 and pruned["regenerated"] is False
     with pytest.raises(crab_r.CrabError, match="no table"):
         crab_r.table(store, "proj.mart.orders_v")
     _damage(store)
-    assert crab_r.prune(store, 30) == {"tables": 0, "columns": 0, "regenerated": True}
+    assert crab_r.prune(store, 30) == {
+        "tables": 0, "columns": 0, "regenerated": True, "regenerate_pending": False}
     assert crab_r.regenerate_needed(store) is False

@@ -43,7 +43,7 @@ pub mod fingerprint;
 pub mod funcs;
 pub mod lineage;
 pub mod ty;
-mod walk;
+pub(crate) mod walk;
 
 pub use bind::{BindOpts, Binder, Bound, FromBind, OutCol, Ref, Rel};
 pub use diag::{Diag, DiagKind, Severity};

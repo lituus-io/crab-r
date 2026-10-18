@@ -7,7 +7,7 @@
 // too) and leaves no edge pointing at a removed node.
 
 use crab_r::describe::describe::{Action, ColumnReport, Report, TableReport};
-use crab_r::describe::lifecycle::prune_at;
+use crab_r::describe::lifecycle::{prune_at, Regen};
 use crab_r::describe::state::{self, Pruned, ROOT};
 use crab_r::lineage::Column;
 use graph_r::{Config, EdgeType, Snapshot, Store, UrlKey};
@@ -143,7 +143,7 @@ fn a_prune_removes_exactly_the_stale_subtrees() {
 
     // Ten days in, a five-day TTL.
     let (p, regenerated) = prune_at(&d, 5, 10 * DAY).unwrap();
-    assert!(!regenerated);
+    assert_eq!(regenerated, Regen::No);
     assert_eq!(p, Pruned { tables: 3, columns: 4 });
 
     let store = Store::open_read_only(&d).unwrap();
@@ -187,7 +187,7 @@ fn a_prune_removes_exactly_the_stale_subtrees() {
 
     // Again: nothing that old is left, so nothing is written.
     let wal = std::fs::read(d.join(graph_r::store::WAL_FILE)).unwrap();
-    assert_eq!(prune_at(&d, 5, 10 * DAY).unwrap(), (Pruned::default(), false));
+    assert_eq!(prune_at(&d, 5, 10 * DAY).unwrap(), (Pruned::default(), Regen::No));
     assert_eq!(std::fs::read(d.join(graph_r::store::WAL_FILE)).unwrap(), wal);
     assert_eq!(Store::open_read_only(&d).unwrap().generation(), generation + 1);
 }
@@ -197,6 +197,6 @@ fn a_prune_of_a_damaged_store_regenerates_it() {
     let d = dir("damaged");
     drop(Store::open_or_create(&d, Config::default()).unwrap());
     std::fs::write(d.join(graph_r::store::BASE_FILE), b"not a base").unwrap();
-    assert_eq!(prune_at(&d, 1, 10 * DAY).unwrap(), (Pruned::default(), true));
+    assert_eq!(prune_at(&d, 1, 10 * DAY).unwrap(), (Pruned::default(), Regen::Done));
     assert!(Store::open_read_only(&d).unwrap().is_empty());
 }

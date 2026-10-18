@@ -48,7 +48,11 @@
 //! answers `regenerate_needed: nothing recorded ...` with success (see
 //! [`crate::describe::lifecycle`]).
 //!
-//! Credentials: Application Default Credentials. Nothing is written to the
+//! Credentials: the caller's own token when one is supplied
+//! ([`Options::with_credentials`], `access_token=` in the Python package):
+//! then no credential is discovered and the metadata server is never asked.
+//! Otherwise Application Default Credentials, with the instance metadata
+//! server forbidden under `--no-metadata-server`. Nothing is written to the
 //! warehouse unless `--apply` is given; then only empty descriptions are
 //! filled (flagged corrections too with `--correct`), each table under
 //! `If-Match` of the resource it read.
@@ -74,8 +78,43 @@ use crate::llm::openai::{OpenAi, OpenAiConfig};
 use crate::llm::vertex::{ExplicitCache, Vertex, VertexConfig};
 use crate::llm::{CacheSupport, Caps, ConstraintSupport, Model, Price};
 use objstore_r::http::{Client, HttpConfig};
-use objstore_r::token::{Adc, Static};
+use objstore_r::token::{Adc, MetadataPolicy, Static};
 use std::fmt::Write as _;
+
+/// A caller's access token: never printed, not even by `Debug`.
+#[derive(Clone)]
+pub struct Secret(String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
+/// Where a run's Google credential comes from.
+#[derive(Clone, Debug, Default)]
+pub struct Credentials {
+    token: Option<Secret>,
+    metadata: MetadataPolicy,
+}
+
+impl Credentials {
+    /// The caller's `token` when given (used as is, nothing discovered),
+    /// else discovery with the metadata server allowed or not.
+    #[must_use]
+    pub fn new(token: Option<String>, metadata: MetadataPolicy) -> Self {
+        Self { token: token.map(Secret), metadata }
+    }
+
+    /// The credential.
+    pub fn adc(&self) -> Result<Adc, String> {
+        match &self.token {
+            Some(Secret(t)) => Adc::from_access_token(t.clone()),
+            None => Adc::discover_with(self.metadata),
+        }
+        .map_err(|e| format!("credentials: {e}"))
+    }
+}
 
 /// Parsed command-line options of a describe run (see [`USAGE`]).
 #[derive(Clone, Debug)]
@@ -111,6 +150,8 @@ pub struct Options {
     correct: bool,
     /// The OpenAI-compatible model (`--openai-url`); `None` is Vertex AI.
     openai: Option<OpenAiOptions>,
+    /// Where the Google credential comes from (never parsed from argv).
+    creds: Credentials,
 }
 
 /// The variable `--openai-key-env` names when it is not given.
@@ -221,6 +262,31 @@ impl OpenAiOptions {
     ) -> Result<OpenAi<Client<Static>>, String> {
         let key = api_key(&self.key_env, value)?;
         let client = Client::new(Static::new(key), HttpConfig::default())
+            .map_err(|e| format!("http: {e}"))?;
+        Ok(OpenAi::new(client, self.config()))
+    }
+
+    /// The model's host (no port).
+    #[must_use]
+    pub fn host(&self) -> &str {
+        let rest = self.url.split_once("://").map_or(self.url.as_str(), |(_, r)| r);
+        let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
+        let auth = auth.rsplit_once('@').map_or(auth, |(_, h)| h);
+        match auth.rsplit_once(':') {
+            Some((h, port)) if port.bytes().all(|b| b.is_ascii_digit()) => h,
+            _ => auth,
+        }
+    }
+
+    /// The model for a drafting run that reaches nothing else: a client
+    /// that may send only to the model's own host, never to a Google host.
+    pub fn connect_offline(
+        &self,
+    ) -> Result<OpenAi<Client<Static, crate::describe::offline::ModelOnly<'_>>>, String> {
+        let policy = crate::describe::offline::ModelOnly::new(self.host())
+            .ok_or("a drafting run's model must not be a Google host")?;
+        let key = api_key(&self.key_env, std::env::var_os(&self.key_env))?;
+        let client = Client::with_policy(Static::new(key), policy, HttpConfig::default())
             .map_err(|e| format!("http: {e}"))?;
         Ok(OpenAi::new(client, self.config()))
     }
@@ -422,6 +488,13 @@ impl OpenAiArgs {
 }
 
 impl Options {
+    /// These options with the run's Google credential from `creds`.
+    #[must_use]
+    pub fn with_credentials(mut self, creds: Credentials) -> Self {
+        self.creds = creds;
+        self
+    }
+
     /// The OpenAI-compatible model, when `--openai-url` chose one.
     #[must_use]
     pub fn openai(&self) -> Option<&OpenAiOptions> {
@@ -435,7 +508,8 @@ pub const USAGE: &str = "usage: crab-describe [PROJECT | PROJECT.DATASET | PROJE
 [--vertex-project P] [--vertex-location L] [--model M] \
 [--openai-url URL --openai-model M [--openai-key-env NAME] [--openai-stream] [--openai-context-tokens N] [--openai-max-output-tokens N] \
 [--price-input-usd-per-mtok X --price-output-usd-per-mtok X]] [--lineage-location L] [--downstream] [--no-profile] [--no-audit] [--overwrite] \
-[--rounds N] [--concurrency N] [--budget-usd X] [--out FILE] [--store DIR] [--publish gs://B/PREFIX|DIR] [--emit-schema DIR] [--apply] [--correct]";
+[--rounds N] [--concurrency N] [--budget-usd X] [--out FILE] [--store DIR] [--publish gs://B/PREFIX|DIR] [--emit-schema DIR] [--apply] [--correct] \
+[--no-metadata-server]";
 
 /// Parse the options of a describe run (the CLI's arguments after the
 /// program name).
@@ -468,6 +542,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
         apply: false,
         correct: false,
         openai: None,
+        creds: Credentials::default(),
     };
     let mut oa = OpenAiArgs::default();
     // The first Vertex-only option given (refused beside `--openai-url`).
@@ -541,6 +616,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
             "--publish" => a.publish = Some(val(&flag)?),
             "--emit-schema" => a.emit_schema = Some(val(&flag)?),
             "--apply" => a.apply = true,
+            "--no-metadata-server" => a.creds.metadata = MetadataPolicy::Forbid,
             "--correct" => a.correct = true,
             "-h" | "--help" => return Err(USAGE.into()),
             other if other.starts_with('-') && other != "-" => {
@@ -581,6 +657,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
 /// directory through objstore-r's graph-r mirror: only what changed is uploaded, and a
 /// second writer is fenced out.
 async fn publish(
+    creds: &Credentials,
     dest: &str,
     store: &graph_r::Store,
 ) -> Result<objstore_r::mirror::Published, String> {
@@ -594,8 +671,7 @@ async fn publish(
     }
     if let Some(rest) = dest.strip_prefix("gs://") {
         let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
-        let tokens = Adc::discover().map_err(|e| format!("credentials: {e}"))?;
-        let gcs = objstore_r::Gcs::new(bucket, tokens, objstore_r::GcsConfig::default())
+        let gcs = objstore_r::Gcs::new(bucket, creds.adc()?, objstore_r::GcsConfig::default())
             .map_err(|e| format!("{dest}: {e}"))?;
         ship(&gcs, prefix, store).await
     } else {
@@ -605,8 +681,8 @@ async fn publish(
 }
 
 /// Fetch a published store into `dir` (first time), or bring it up to date
-/// with only what changed since.
-pub async fn pull(src: &str, dir: &str) -> Result<String, String> {
+/// with only what changed since; a `gs://` source is read with `creds`.
+pub async fn pull(src: &str, dir: &str, creds: &Credentials) -> Result<String, String> {
     async fn sync<O: objstore_r::mirror::ObjectStore>(
         objects: &O,
         prefix: &str,
@@ -650,8 +726,7 @@ pub async fn pull(src: &str, dir: &str) -> Result<String, String> {
     // makes, not on the caller's stack.
     if let Some(rest) = src.strip_prefix("gs://") {
         let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
-        let tokens = Adc::discover().map_err(|e| format!("credentials: {e}"))?;
-        let gcs = objstore_r::Gcs::new(bucket, tokens, objstore_r::GcsConfig::default())
+        let gcs = objstore_r::Gcs::new(bucket, creds.adc()?, objstore_r::GcsConfig::default())
             .map_err(|e| format!("{src}: {e}"))?;
         Box::pin(sync(&gcs, prefix, dir)).await
     } else {
@@ -661,11 +736,57 @@ pub async fn pull(src: &str, dir: &str) -> Result<String, String> {
 }
 
 /// The lookup subcommands.
-pub const LOOKUPS: [&str; 5] = ["table", "lookup", "upstream", "downstream", "due"];
+pub const LOOKUPS: [&str; 6] = ["table", "lookup", "upstream", "downstream", "due", "search"];
+
+/// The last line of an answer cut to its token budget.
+pub const TRUNCATED: &str = "truncated";
 
 /// A lookup subcommand over the store in `args[0]`: its text, or why
 /// not. Reads only the store, no network.
 pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
+    lookup_within(cmd, args, None)
+}
+
+/// [`lookup`] answering within `budget` tokens (graph-r's
+/// [`graph_r::TokenBudget`], about four bytes a token): whole lines, nearest
+/// first, then one `truncated: N more lines` line when some did not fit.
+/// `search STORE TEXT [N]` is graph-r's own ranked, budgeted query over the
+/// store's names and descriptions.
+pub fn lookup_within(
+    cmd: &str,
+    args: &[String],
+    budget: Option<graph_r::TokenBudget>,
+) -> Result<String, String> {
+    let full = lookup_all(cmd, args, budget)?;
+    Ok(match budget {
+        Some(b) => within(&full, b),
+        None => full,
+    })
+}
+
+/// `text` cut, at a line, to `budget` tokens.
+fn within(text: &str, budget: graph_r::TokenBudget) -> String {
+    let mut out = String::new();
+    let mut spent = 0u64;
+    let lines: Vec<&str> = text.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let cost = graph_r::text::estimate_tokens(line.len() + 1);
+        if spent + cost > u64::from(budget.0) {
+            let _ = writeln!(out, "{TRUNCATED}: {} more lines", lines.len() - i);
+            return out;
+        }
+        spent += cost;
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn lookup_all(
+    cmd: &str,
+    args: &[String],
+    budget: Option<graph_r::TokenBudget>,
+) -> Result<String, String> {
     use crate::describe::state::attr;
     use graph_r::{Direction, EdgeType, UrlKey};
     let mut out = String::new();
@@ -722,6 +843,16 @@ pub fn lookup(cmd: &str, args: &[String]) -> Result<String, String> {
     };
     let depth: u32 = args.get(2).and_then(|d| d.parse().ok()).unwrap_or(10);
     match cmd {
+        "search" => {
+            let opts = graph_r::QueryOpts {
+                limit: args.get(2).and_then(|n| n.parse().ok()).unwrap_or(20),
+                budget: budget.unwrap_or_default(),
+                ..graph_r::QueryOpts::default()
+            };
+            for h in snap.query(name, &opts) {
+                writeln!(out, "{}", line(h.key)).unwrap_or_default();
+            }
+        }
         "due" => {
             let n: usize = args.get(1).and_then(|d| d.parse().ok()).unwrap_or(20);
             for d in
@@ -836,13 +967,95 @@ pub fn prune(args: &[String]) -> Result<String, String> {
     let (Some(dir), Some(days)) = (args.first(), args.get(1).and_then(|d| d.parse().ok())) else {
         return Err("usage: crab-describe prune STORE_DIR DAYS".into());
     };
-    let (p, regenerated) =
+    let (p, regen) =
         crate::describe::lifecycle::prune(dir, days).map_err(|e| format!("{dir}: {e}"))?;
-    Ok(if regenerated {
-        format!("{dir} could not be read and was regenerated; nothing to prune\n")
-    } else {
-        format!("pruned {} tables, {} columns from {dir}\n", p.tables, p.columns)
+    Ok(match regen {
+        crate::describe::lifecycle::Regen::Done => format!("{dir} could not be read and was regenerated; nothing to prune\n"),
+        crate::describe::lifecycle::Regen::Pending => format!(
+            "{dir} could not be read and another process holds it: regenerate_pending, nothing pruned\n"
+        ),
+        crate::describe::lifecycle::Regen::No => format!("pruned {} tables, {} columns from {dir}\n", p.tables, p.columns),
     })
+}
+
+/// Tables a drafting run takes at once.
+pub const MAX_OFFLINE_TABLES: usize = 256;
+
+/// Draft descriptions from `catalog_json` (table metadata the caller read:
+/// [`crate::exec::table_meta`] answers or table resources) with no Google
+/// client at all: the model must be OpenAI-compatible (`--openai-url`) and
+/// its client reaches only its own host. `--store` is reused (unchanged
+/// tables are not drafted again, the store's lineage and descriptions are
+/// inherited) and the drafts are recorded in it; `--out` and
+/// `--emit-schema` are written. Nothing is written to the warehouse:
+/// `--apply`, `--publish` and `--lineage-location` are refused, since each
+/// reaches Google.
+pub async fn run_offline(
+    a: &Options,
+    catalog_json: &str,
+    log: &mut impl FnMut(&str),
+) -> Result<Report, String> {
+    if a.apply || a.publish.is_some() || a.lineage_location.is_some() {
+        return Err(
+            "an offline run reaches no Google service: --apply, --publish and --lineage-location are refused"
+                .into(),
+        );
+    }
+    let o = a.openai.as_ref().ok_or(
+        "an offline run needs an OpenAI-compatible model (--openai-url): Vertex AI is a Google host",
+    )?;
+    let model = o.connect_offline()?;
+    log(&o.summary());
+    let supplied = crate::describe::offline::parse_catalog(catalog_json, MAX_OFFLINE_TABLES)?;
+    let mut regenerated = false;
+    let store = match &a.store {
+        Some(dir) => {
+            let opened = crate::describe::lifecycle::open_or_regenerate(dir)
+                .map_err(|e| format!("{dir}: {e}"))?;
+            regenerated = opened.regenerated();
+            if opened.pending() {
+                log(&format!(
+                    "warning: store {dir} needs regenerating and another process holds it \
+                     (regenerate_pending); this run records nothing in it"
+                ));
+            }
+            opened.store()
+        }
+        None => None,
+    };
+    let mut cfg = DescribeConfig::new(Vec::new(), &a.region, "");
+    cfg.audit_existing = a.audit;
+    cfg.overwrite = a.overwrite;
+    cfg.max_rounds = a.rounds;
+    cfg.concurrency = a.concurrency;
+    cfg.budget =
+        crate::base::Budget::new(50_000_000, 0, (a.budget_usd * 1e6) as u64, 6 * 3_600_000);
+    if let Some(s) = &store {
+        cfg.prior = crate::describe::state::load(s);
+    }
+    let mut report =
+        crate::describe::offline::describe_offline(&model, &supplied, store.as_ref(), &cfg).await;
+    report.regenerated = regenerated;
+    if let Some(s) = &store {
+        crate::describe::state::save(s, &report, graph_r::fsio::now_ms())
+            .map_err(|e| format!("store: {e}"))?;
+    }
+    if let Some(p) = &a.out {
+        let json = report::to_json(&report);
+        graph_r::fsio::write_atomic(std::path::Path::new(p), &[json.as_bytes()])
+            .map_err(|e| format!("{p}: {e}"))?;
+    }
+    if let Some(dir) = &a.emit_schema {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
+        for t in &report.tables {
+            if let Some(s) = report::schema_file(t, a.correct) {
+                let path = format!("{dir}/{}.schema.json", t.table);
+                graph_r::fsio::write_atomic(std::path::Path::new(&path), &[s.as_bytes()])
+                    .map_err(|e| format!("{path}: {e}"))?;
+            }
+        }
+    }
+    Ok(report)
 }
 
 /// [`describe`] with the lineage source when there is one.
@@ -883,13 +1096,8 @@ pub async fn run(a: &Options, log: &mut impl FnMut(&str)) -> Result<Report, Stri
     // job history is read from the jobs project, which may differ.
     let billing = a.billing_project.clone().unwrap_or_else(|| home.clone());
     let jobs_project = a.jobs_project.clone().unwrap_or_else(|| home.clone());
-    let http = || {
-        Client::new(
-            Adc::discover().map_err(|e| format!("credentials: {e}"))?,
-            HttpConfig::default(),
-        )
-        .map_err(|e| format!("http: {e}"))
-    };
+    let http =
+        || Client::new(a.creds.adc()?, HttpConfig::default()).map_err(|e| format!("http: {e}"));
     let bq = BigQuery::new(
         http()?,
         &BigQueryConfig { project: billing.clone(), location: a.region.clone(), endpoint: None },
@@ -908,13 +1116,19 @@ pub async fn run(a: &Options, log: &mut impl FnMut(&str)) -> Result<Report, Stri
     let mut regenerated = false;
     let store = match &a.store {
         Some(dir) => {
-            let (s, r) = crate::describe::lifecycle::open_or_regenerate(dir)
+            let opened = crate::describe::lifecycle::open_or_regenerate(dir)
                 .map_err(|e| format!("{dir}: {e}"))?;
-            if r {
+            regenerated = opened.regenerated();
+            if regenerated {
                 log(&format!("warning: store {dir} could not be read; regenerated empty"));
             }
-            regenerated = r;
-            Some(s)
+            if opened.pending() {
+                log(&format!(
+                    "warning: store {dir} needs regenerating and another process holds it \
+                     (regenerate_pending); this run records nothing in it"
+                ));
+            }
+            opened.store()
         }
         None => None,
     };
@@ -984,7 +1198,7 @@ pub async fn run(a: &Options, log: &mut impl FnMut(&str)) -> Result<Report, Stri
             log(&format!("store kept as it was for {}", report.unreadable.join(", ")));
         }
         if let Some(dest) = &a.publish {
-            let p = publish(dest, s).await?;
+            let p = publish(&a.creds, dest, s).await?;
             log(&format!(
                 "published {dest}: generation {}, {} bytes uploaded",
                 p.generation, p.uploaded
