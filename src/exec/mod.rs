@@ -28,6 +28,8 @@
 
 pub mod bigquery;
 mod decode;
+#[cfg(feature = "http")]
+pub mod guard;
 pub mod metadata;
 
 pub use crate::base::batch::{Batch, ColType};

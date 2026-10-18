@@ -31,8 +31,10 @@ pub mod ast;
 pub mod emit;
 pub mod lexer;
 pub mod parser;
+pub mod refs;
 
 pub use parser::{viability, Mode, ParseError, Parsed, Parser, Script, Viability};
+pub use refs::{referenced_tables, DatasetRef, RefKind, TableRef};
 
 /// A byte span into the source text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]

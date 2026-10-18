@@ -711,29 +711,21 @@ fn qualify(sql: &str, default_dataset: &str) -> String {
     out
 }
 
-/// Tables `sql` (the producer of `table`) reads, `project.dataset.table`.
-/// Unqualified names resolve in `table`'s dataset only when
-/// `unqualified` (a query's own CTEs never count).
+/// Tables `sql` (the producer of `table`) reads, `project.dataset.table`,
+/// through [`crate::sql::refs::referenced_tables_with`]. Unqualified names
+/// resolve in `table`'s dataset only when `unqualified` (a query's own CTEs
+/// never count); a dataset-qualified name is in `table`'s project.
 fn reads_of(p: &mut crate::sql::Parser, sql: &str, table: &str, unqualified: bool) -> Vec<String> {
-    let mut out = Vec::new();
-    let Some((proj, ds, _)) = crate::base::key::split_fqn(table) else { return out };
-    let Ok(script) = p.parse_script(sql, crate::sql::Mode::Full) else { return out };
-    let ctes: Vec<String> =
-        script.ast.ctes.iter().map(|(_, c)| script.text(c.name.sp).to_ascii_lowercase()).collect();
-    for (_, f) in script.ast.froms.iter() {
-        if let crate::sql::ast::From::Table { path, .. } = *f {
-            let raw = script.path(path);
-            let full = match raw.matches('.').count() {
-                0 if unqualified && !ctes.contains(&raw.to_ascii_lowercase()) => {
-                    format!("{proj}.{ds}.{raw}")
-                }
-                0 => continue,
-                1 => format!("{proj}.{raw}"),
-                _ => raw,
-            };
-            if !out.contains(&full) {
-                out.push(full);
-            }
+    use crate::sql::refs::{referenced_tables_with, DatasetRef, RefKind};
+    let Some((proj, ds, _)) = crate::base::key::split_fqn(table) else { return Vec::new() };
+    let home = unqualified.then_some(DatasetRef { project: Some(proj), dataset: ds });
+    let Ok(refs) = referenced_tables_with(p, sql, home) else { return Vec::new() };
+    let mut out: Vec<String> = Vec::new();
+    for r in refs.into_iter().filter(|r| r.kind == RefKind::Table) {
+        let Some(d) = r.dataset else { continue };
+        let full = format!("{}.{d}.{}", r.project.as_deref().unwrap_or(proj), r.table);
+        if !out.contains(&full) {
+            out.push(full);
         }
     }
     out

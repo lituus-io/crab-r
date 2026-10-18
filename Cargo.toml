@@ -45,14 +45,16 @@ dataplex = ["objstore-r/http"]
 # AI, a blocking runtime, and store publishing to Cloud Storage through
 # objstore-r's graph-r mirror.
 cli = ["http", "vertex", "openai", "dataplex", "objstore-r/blocking", "objstore-r/gcs", "objstore-r/mirror"]
+# Test seams: a metadata guard that accepts plain `http` to a loopback stub.
+testing = ["http", "objstore-r/testing"]
 
 [package.metadata.docs.rs]
 features = ["cli", "openai"]
 
 [dependencies]
 graph-r = { package = "uu-graph-r", path = "../graph-r", version = "0.6.0", default-features = false, features = ["store"] }
-link-r = { package = "uu-link-r", path = "../link-r", version = "0.4.3", default-features = false }
-objstore-r = { package = "uu-objstore-r", path = "../objstore-r", version = "0.3.0" }
+link-r = { package = "uu-link-r", path = "../link-r", version = "0.4.4", default-features = false }
+objstore-r = { package = "uu-objstore-r", path = "../objstore-r", version = "0.4.0" }
 
 [dev-dependencies]
 proptest = "1.5"
