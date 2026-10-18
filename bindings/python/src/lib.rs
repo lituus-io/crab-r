@@ -21,6 +21,13 @@
 //! Default Credentials are discovered with the metadata server forbidden
 //! (`metadata_server=True` allows it).
 //!
+//! `query` runs one read-only query under the metadata guard: a statement
+//! that reads a table outside `INFORMATION_SCHEMA`, `__TABLES__` and the
+//! graph datasets is refused before a credential is touched or a byte is
+//! sent. Its rows are dicts of plain scalars in a `QueryRows` list, whose
+//! `truncated` says whether the row cap or the token budget cut any. Every
+//! failure is a `QueryError` with a `.reason`.
+//!
 //! A store that cannot be read is regenerated, never an error: `describe`,
 //! `ingest_lineage` and `prune` rebuild it (`"regenerated": True` in what
 //! they return), and a lookup answers `"regenerate_needed: nothing
@@ -30,14 +37,22 @@
 //! changes nothing.
 
 use crab::describe::app::{self, Credentials};
+use crab::exec::guard::MetadataGuard;
+use crab::exec::query::{
+    scalar, QueryOptions, Rows, Scalar, DEFAULT_MAX_BYTES_BILLED, DEFAULT_MAX_ROWS,
+    DEFAULT_TIMEOUT_MS,
+};
 use crab::exec::table_meta::{self as tm, MetaClient, MetaOptions, Outcome};
+use crab::sql::refs::DatasetRef;
 use objstore_r::token::{Adc, MetadataPolicy};
 use pyo3::create_exception;
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyTuple};
 use std::sync::OnceLock;
 
 create_exception!(crab_r, CrabError, pyo3::exceptions::PyException);
+create_exception!(crab_r, QueryError, CrabError);
 
 /// Flags that switch a default off when given `False`.
 const NEGATED: [(&str, &str); 2] = [("profile", "--no-profile"), ("audit", "--no-audit")];
@@ -536,6 +551,230 @@ fn table_meta_async<'py>(
     awaitable(py, move || run_meta(call), |py, json: String| loads(py, &json).map(Bound::unbind))
 }
 
+/// What `query` needs, owned, so its future can outlive the call.
+struct QueryCall {
+    sql: String,
+    project: String,
+    location: Option<String>,
+    datasets: Vec<String>,
+    run: crab::exec::RunOpts,
+    budget: Option<graph_r::TokenBudget>,
+    adc: Result<Adc, objstore_r::Error>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn query_call(
+    sql: String,
+    project: String,
+    location: Option<String>,
+    access_token: Option<String>,
+    metadata_server: bool,
+    graph_datasets: Vec<String>,
+    max_bytes_billed: u64,
+    timeout_ms: u32,
+    max_rows: u32,
+    budget_tokens: Option<u32>,
+) -> PyResult<QueryCall> {
+    let invalid = pyo3::exceptions::PyValueError::new_err;
+    if project.trim().is_empty() {
+        return Err(invalid("project: empty"));
+    }
+    if graph_datasets.iter().any(|d| d.trim().is_empty() || d.ends_with('.')) {
+        return Err(invalid("graph_datasets: an empty dataset name"));
+    }
+    if max_rows == 0 || timeout_ms == 0 || max_bytes_billed == 0 {
+        return Err(invalid("max_rows, timeout_ms and max_bytes_billed must be positive"));
+    }
+    let adc = match access_token {
+        Some(t) => Adc::from_access_token(t),
+        None => Adc::discover_with(if metadata_server {
+            MetadataPolicy::Allow
+        } else {
+            MetadataPolicy::Forbid
+        }),
+    };
+    Ok(QueryCall {
+        sql,
+        project,
+        location,
+        datasets: graph_datasets,
+        run: crab::exec::RunOpts {
+            max_bytes_billed: Some(max_bytes_billed),
+            max_rows,
+            timeout_ms,
+            use_cache: true,
+        },
+        budget: budget_tokens.map(graph_r::TokenBudget),
+        adc,
+    })
+}
+
+/// The origin a testing build sends queries to (a loopback stub).
+#[cfg(feature = "testing")]
+static TEST_ORIGIN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Send every `query` to `origin` (plain `http` to a loopback host), or
+/// back to BigQuery with `None`. Testing builds only.
+#[cfg(feature = "testing")]
+#[pyfunction]
+#[pyo3(signature = (origin = None))]
+fn _set_test_origin(origin: Option<String>) {
+    *TEST_ORIGIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = origin;
+}
+
+async fn run_query(call: QueryCall) -> Result<Rows, crab::exec::query::QueryError> {
+    let refs: Vec<DatasetRef<'_>> = call.datasets.iter().map(|d| DatasetRef::parse(d)).collect();
+    let guard = MetadataGuard::new(&refs, None);
+    #[cfg(feature = "testing")]
+    let origin = TEST_ORIGIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    #[cfg(feature = "testing")]
+    let guard = if origin.is_some() { guard.with_loopback_http() } else { guard };
+    #[cfg(not(feature = "testing"))]
+    let origin: Option<String> = None;
+    let opts = QueryOptions {
+        location: call.location.as_deref(),
+        run: call.run,
+        budget: call.budget,
+        endpoint: origin.as_deref(),
+    };
+    crab::exec::query::query(call.adc, guard, &call.project, &call.sql, &opts).await
+}
+
+/// `QueryRows`: a `list` subclass carrying what a query cost and whether
+/// it was cut, made once per process.
+fn rows_type(py: Python<'_>) -> PyResult<&Bound<'_, pyo3::types::PyType>> {
+    static ROWS: PyOnceLock<Py<pyo3::types::PyType>> = PyOnceLock::new();
+    let t = ROWS.get_or_try_init(py, || -> PyResult<_> {
+        let ns = PyDict::new(py);
+        ns.set_item("__module__", "crab_r")?;
+        ns.set_item(
+            "__doc__",
+            "Rows of a query: a list of dicts, with `truncated`, `total_rows`, \
+             `bytes_processed`, `bytes_billed` and `cache_hit`.",
+        )?;
+        let list = py.get_type::<pyo3::types::PyList>();
+        let t = py
+            .get_type::<pyo3::types::PyType>()
+            .call1(("QueryRows", (list,), ns))?
+            .cast_into::<pyo3::types::PyType>()?;
+        Ok(t.unbind())
+    })?;
+    Ok(t.bind(py))
+}
+
+/// A query's outcome as Python: a `QueryRows` list, or a `QueryError`.
+fn rows_or_error(
+    py: Python<'_>,
+    out: Result<Rows, crab::exec::query::QueryError>,
+) -> PyResult<Py<PyAny>> {
+    let rows = match out {
+        Ok(r) => r,
+        Err(e) => {
+            let err = QueryError::new_err(e.to_string());
+            err.value(py).setattr("reason", e.failure.as_str())?;
+            return Err(err);
+        }
+    };
+    let keys: Vec<Bound<'_, pyo3::types::PyString>> =
+        rows.batch.names.iter().map(|n| pyo3::types::PyString::new(py, n)).collect();
+    let list = pyo3::types::PyList::empty(py);
+    let mut buf = String::new();
+    for i in 0..rows.len() {
+        let d = PyDict::new(py);
+        for (k, col) in keys.iter().zip(&rows.batch.columns) {
+            match scalar(col, i, &mut buf) {
+                Scalar::Null => d.set_item(k, py.None())?,
+                Scalar::Bool(b) => d.set_item(k, b)?,
+                Scalar::Int(v) => d.set_item(k, v)?,
+                Scalar::Float(v) => d.set_item(k, v)?,
+                Scalar::Str(s) => d.set_item(k, s)?,
+            }
+        }
+        list.append(d)?;
+    }
+    let out = rows_type(py)?.call1((list,))?;
+    out.setattr("truncated", rows.truncated)?;
+    out.setattr("total_rows", rows.total_rows)?;
+    out.setattr("bytes_processed", rows.bytes_processed)?;
+    out.setattr("bytes_billed", rows.bytes_billed)?;
+    out.setattr("cache_hit", rows.cache_hit)?;
+    Ok(out.unbind())
+}
+
+/// Run one read-only query in `project`: rows as dicts of plain scalars
+/// (str, int, float, bool, None; timestamps as ISO 8601 text), in a
+/// `QueryRows` list whose `truncated` is True when `max_rows` or
+/// `budget_tokens` cut any. Only `INFORMATION_SCHEMA`, `__TABLES__` and the
+/// `graph_datasets` (`"ops"`, or `"project.ops"`) may be read: anything else
+/// is refused before a credential is touched or a byte sent. Raises
+/// `QueryError` (`.reason`: `refused_by_guard`, `no_credentials`,
+/// `expired`, `no_access`, `not_found`, `bytes_limit`, `invalid_query`,
+/// `timeout`, `unreachable`); its text never holds the token.
+#[pyfunction]
+#[pyo3(signature = (sql, project, location = None, access_token = None, metadata_server = false, graph_datasets = vec!["ops".to_owned(), "infra".to_owned()], max_bytes_billed = DEFAULT_MAX_BYTES_BILLED, timeout_ms = DEFAULT_TIMEOUT_MS, max_rows = DEFAULT_MAX_ROWS, budget_tokens = None))]
+#[allow(clippy::too_many_arguments)]
+fn query(
+    py: Python<'_>,
+    sql: String,
+    project: String,
+    location: Option<String>,
+    access_token: Option<String>,
+    metadata_server: bool,
+    graph_datasets: Vec<String>,
+    max_bytes_billed: u64,
+    timeout_ms: u32,
+    max_rows: u32,
+    budget_tokens: Option<u32>,
+) -> PyResult<Py<PyAny>> {
+    let call = query_call(
+        sql,
+        project,
+        location,
+        access_token,
+        metadata_server,
+        graph_datasets,
+        max_bytes_billed,
+        timeout_ms,
+        max_rows,
+        budget_tokens,
+    )?;
+    let out = block(py, move || run_query(call))?;
+    rows_or_error(py, out)
+}
+
+/// [`query`] as an awaitable on the shared runtime; cancelling it cancels
+/// the request.
+#[pyfunction]
+#[pyo3(signature = (sql, project, location = None, access_token = None, metadata_server = false, graph_datasets = vec!["ops".to_owned(), "infra".to_owned()], max_bytes_billed = DEFAULT_MAX_BYTES_BILLED, timeout_ms = DEFAULT_TIMEOUT_MS, max_rows = DEFAULT_MAX_ROWS, budget_tokens = None))]
+#[allow(clippy::too_many_arguments)]
+fn query_async<'py>(
+    py: Python<'py>,
+    sql: String,
+    project: String,
+    location: Option<String>,
+    access_token: Option<String>,
+    metadata_server: bool,
+    graph_datasets: Vec<String>,
+    max_bytes_billed: u64,
+    timeout_ms: u32,
+    max_rows: u32,
+    budget_tokens: Option<u32>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let call = query_call(
+        sql,
+        project,
+        location,
+        access_token,
+        metadata_server,
+        graph_datasets,
+        max_bytes_billed,
+        timeout_ms,
+        max_rows,
+        budget_tokens,
+    )?;
+    awaitable(py, move || run_query(call), rows_or_error)
+}
+
 /// The options and catalog of a drafting run.
 fn offline_call(
     store: Option<String>,
@@ -618,6 +857,10 @@ fn crab_r(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(describe_offline_async, m)?)?;
     m.add_function(wrap_pyfunction!(table_meta, m)?)?;
     m.add_function(wrap_pyfunction!(table_meta_async, m)?)?;
+    m.add_function(wrap_pyfunction!(query, m)?)?;
+    m.add_function(wrap_pyfunction!(query_async, m)?)?;
+    #[cfg(feature = "testing")]
+    m.add_function(wrap_pyfunction!(_set_test_origin, m)?)?;
     m.add_function(wrap_pyfunction!(jobs_projection_sql, m)?)?;
     m.add_function(wrap_pyfunction!(table, m)?)?;
     m.add_function(wrap_pyfunction!(lookup, m)?)?;
@@ -634,6 +877,8 @@ fn crab_r(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dotted, m)?)?;
     m.add_function(wrap_pyfunction!(_runtime_id, m)?)?;
     m.add("CrabError", m.py().get_type::<CrabError>())?;
+    m.add("QueryError", m.py().get_type::<QueryError>())?;
+    m.add("QueryRows", rows_type(m.py())?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

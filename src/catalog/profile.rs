@@ -297,7 +297,9 @@ pub async fn profile<W: Warehouse>(
                 if e.is_sql_error()
                     || matches!(
                         e,
-                        crate::exec::Error::BytesLimit { .. } | crate::exec::Error::Denied { .. }
+                        crate::exec::Error::BytesLimit { .. }
+                            | crate::exec::Error::Denied { .. }
+                            | crate::exec::Error::Unauthenticated { .. }
                     ) =>
             {
                 failed_tables.insert(ti);

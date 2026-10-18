@@ -9,6 +9,25 @@ __version__: str
 class CrabError(Exception):
     """A run or lookup failed (credentials, warehouse, store)."""
 
+class QueryError(CrabError):
+    """A `query` failed. The text never holds the token."""
+
+    reason: str
+    """`refused_by_guard`, `no_credentials`, `expired`, `no_access`, `not_found`, `bytes_limit`,
+    `invalid_query`, `timeout` or `unreachable`."""
+
+class QueryRows(list[dict[str, Any]]):
+    """A query's rows: dicts of plain scalars (str, int, float, bool, None; TIMESTAMP as ISO 8601 UTC text ending
+    `Z`, DATE/DATETIME/TIME as ISO 8601, NUMERIC as exact decimal text, BYTES as base64, STRUCT/ARRAY/JSON as
+    compact JSON text)."""
+
+    truncated: bool
+    """Rows exist beyond these: `max_rows` or `budget_tokens` cut some."""
+    total_rows: int
+    bytes_processed: int
+    bytes_billed: int
+    cache_hit: bool
+
 def describe(*targets: str, sql: str | None = None, **options: Any) -> dict[str, Any]:
     """Describe projects, datasets (`"p.d"`), tables (`"p.d.t"`) or SQL.
 
@@ -82,6 +101,28 @@ def table_meta(tables: list[str], include_view_sql: bool = False, omit_columns: 
 async def table_meta_async(tables: list[str], include_view_sql: bool = False, omit_columns: list[str] | None = None,
                            access_token: str | None = None, metadata_server: bool = False) -> list[dict[str, Any]]:
     """`table_meta` as an awaitable on the shared runtime; cancelling it cancels the requests."""
+
+def query(sql: str, project: str, location: str | None = None, access_token: str | None = None,
+          metadata_server: bool = False, graph_datasets: list[str] | tuple[str, ...] = ("ops", "infra"),
+          max_bytes_billed: int = 1 << 30, timeout_ms: int = 30_000, max_rows: int = 1_000,
+          budget_tokens: int | None = None) -> QueryRows:
+    """Run one read-only query in `project` (which runs and pays for the job).
+
+    Only `INFORMATION_SCHEMA` views, `__TABLES__` and the `graph_datasets` (`"ops"`, or `"project.ops"` for one
+    project's) may be read; one query statement, no DML, DDL, scripts, `EXTERNAL_QUERY` or unqualified names.
+    Anything else raises QueryError(`refused_by_guard`) before a credential is touched or a byte is sent. The job
+    bills at most `max_bytes_billed`; at most `max_rows` rows come back, then only the whole rows that fit
+    `budget_tokens` (about four bytes a token, each row measured as compact JSON); `truncated` says whether either
+    cut. `location=None` lets BigQuery place the job with its data. Credentials: `access_token=` as given, else
+    Application Default Credentials with the metadata server forbidden unless `metadata_server=True`. Raises
+    ValueError for invalid arguments.
+    """
+
+async def query_async(sql: str, project: str, location: str | None = None, access_token: str | None = None,
+                      metadata_server: bool = False, graph_datasets: list[str] | tuple[str, ...] = ("ops", "infra"),
+                      max_bytes_billed: int = 1 << 30, timeout_ms: int = 30_000, max_rows: int = 1_000,
+                      budget_tokens: int | None = None) -> QueryRows:
+    """`query` as an awaitable on the shared runtime; cancelling it cancels the request."""
 
 def describe_offline(store: str | None, catalog_metadata: list[dict[str, Any]] | str, **options: Any) -> dict[str, Any]:
     """Draft descriptions for the tables of `catalog_metadata` (what `table_meta` returned) with no Google client.

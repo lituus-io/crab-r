@@ -95,10 +95,14 @@ meta = crab_r.table_meta(["my-project.mart.orders"], omit_columns=["email"], acc
 # Drafts from that metadata with no Google client at all (an OpenAI-compatible model).
 drafts = crab_r.describe_offline("state", meta, openai_url=url, openai_model=m, openai_key_env="KEY",
                                  price_input_usd_per_mtok=0.15, price_output_usd_per_mtok=0.6)
+# One read-only query: INFORMATION_SCHEMA, __TABLES__ and the graph datasets only.
+rows = crab_r.query("SELECT * FROM `my-project.ops.resource_health`", "my-project",
+                    access_token=token, max_rows=200, budget_tokens=2000)
+rows.truncated  # True when max_rows or budget_tokens cut any rows
 ```
 
-`table_meta_async` and `describe_offline_async` are awaitables on one
-process-wide runtime; cancelling one cancels its requests.
+`table_meta_async`, `query_async` and `describe_offline_async` are
+awaitables on one process-wide runtime; cancelling one cancels its requests.
 
 ## Layout
 

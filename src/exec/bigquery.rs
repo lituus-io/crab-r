@@ -35,7 +35,8 @@ const MAX_PAGE_ROWS: u32 = 50_000;
 pub struct BigQueryConfig {
     /// Project that runs (and pays for) the jobs.
     pub project: String,
-    /// Location (`US`, `EU`, `us-central1`, ...).
+    /// Location (`US`, `EU`, `us-central1`, ...); empty lets BigQuery place
+    /// the job where the data is.
     pub location: String,
     /// Override the API origin (tests, private endpoints).
     pub endpoint: Option<String>,
@@ -105,14 +106,12 @@ impl<T: Transport> BigQuery<T> {
     fn query_body(&self, sql: &str, dry: bool, opts: &RunOpts) -> Bytes {
         let mut out = String::with_capacity(sql.len() + 320);
         let mut w = Writer::new(&mut out);
-        w.begin_object()
-            .key("query")
-            .string(sql)
-            .key("useLegacySql")
-            .bool(false)
-            .key("location")
-            .string(&self.location)
-            .key("requestId")
+        w.begin_object().key("query").string(sql).key("useLegacySql").bool(false);
+        // No location: BigQuery places the job where the data is.
+        if !self.location.is_empty() {
+            w.key("location").string(&self.location);
+        }
+        w.key("requestId")
             .string(&self.request_id())
             .key("formatOptions")
             .begin_object()
@@ -152,11 +151,15 @@ impl<T: Transport> BigQuery<T> {
         u.push_str(&self.queries_url);
         u.push('/');
         encode_component(job_id, &mut u);
-        u.push_str("?location=");
-        encode_component(location, &mut u);
+        u.push('?');
+        if !location.is_empty() {
+            u.push_str("location=");
+            encode_component(location, &mut u);
+            u.push('&');
+        }
         let _ = write!(
             u,
-            "&timeoutMs={timeout_ms}&maxResults={max_rows}&formatOptions.useInt64Timestamp=true"
+            "timeoutMs={timeout_ms}&maxResults={max_rows}&formatOptions.useInt64Timestamp=true"
         );
         if let Some(t) = token {
             u.push_str("&pageToken=");
