@@ -1,0 +1,25 @@
+# The table-identity spec shared with pulumi-rs-yaml sql_lineage::ids
+# (project lowercased, domain:project one segment, $partition stripped,
+# column lowercased; dataset and table case kept). One row per spelling:
+# input<TAB>canonical bq:// id. An input starting with "sql:" is a FROM
+# clause read through referenced_tables. A canonical id of "-" is refused.
+p.d.t	bq://p/d/t
+My-Proj.DS.T	bq://my-proj/DS/T
+my-proj.DS.T	bq://my-proj/DS/T
+example.com:Proj.d.t	bq://example.com:proj/d/t
+example.com:proj.d.t$2024	bq://example.com:proj/d/t
+P.d.events$20240101	bq://p/d/events
+p.d.T.USER_ID	bq://p/d/T#user_id
+bq://My-Proj/d/t#Col	bq://my-proj/d/t#col
+bq://example.com:proj/d/t	bq://example.com:proj/d/t
+p.d	bq://p/d
+P	bq://p
+sql:`example.com:Proj.d.t`	bq://example.com:proj/d/t
+sql:`example.com:proj`.`d`.`t`	bq://example.com:proj/d/t
+sql:`p.d.t`	bq://p/d/t
+sql:`p`.`d`.`t`	bq://p/d/t
+sql:My-Proj.DS.T	bq://my-proj/DS/T
+p.d/x.t	-
+p.d.t#c	-
+p..t	-
+example.com:proj.a.b.c.d	-

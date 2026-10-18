@@ -22,6 +22,18 @@
 //! lock files `graph.lock` and `graph.wait` stay: they hold no data, and
 //! another process may be waiting on them, so replacing them would let two
 //! writers hold "the" lock at once.
+//!
+//! A data file another process still maps cannot be deleted on Windows (os
+//! error 1224), but it can be renamed: it is renamed aside, to a temporary
+//! name the next regeneration deletes, and the store is built fresh while
+//! the reader keeps its mapping. When even the rename is refused the open
+//! is [`Opened::RegeneratePending`], never an error: nothing is recorded
+//! this time, and the next writer tries again.
+//!
+//! A store keyed by an older identity spec (a project spelled with capitals,
+//! from before projects were canonical lowercase; see
+//! [`crate::base::key`]) is treated as damaged: its keys would never match a
+//! lookup again, so it is regenerated the same way.
 
 use crate::describe::state::{self, Pruned};
 use graph_r::store::{BASE_FILE, LOCK_FILE, WAL_FILE};
@@ -172,6 +184,114 @@ pub fn refuse_links(dir: impl AsRef<Path>) -> Result<(), OpenError> {
     own_files(dir.as_ref()).map(|_| ())
 }
 
+/// The store keys a project with capitals: written under the identity spec
+/// before projects were lowercased, so its keys no longer match. Read from
+/// the datasets under the root (one edge per dataset).
+fn legacy_ids(store: &Store) -> bool {
+    let snap = store.snapshot();
+    let root = graph_r::UrlKey::of(state::ROOT);
+    let mut legacy = false;
+    let mut it = snap.neighbors(root);
+    while let Some(e) = graph_r::LendingIterator::next(&mut it) {
+        let Some(url) = snap.node(e.dst_key).map(|n| n.url) else { continue };
+        let project = url.strip_prefix(state::ROOT).and_then(|r| r.split('/').next());
+        if project.is_some_and(|p| p.chars().any(char::is_uppercase)) {
+            legacy = true;
+            break;
+        }
+    }
+    legacy
+}
+
+/// How a writable open went.
+#[derive(Debug)]
+#[must_use]
+pub enum Opened {
+    /// Opened as found, or created.
+    Ready(Store),
+    /// It could not be read; it was rebuilt empty (the old data gone, or
+    /// renamed aside while another process still maps it).
+    Regenerated(Store),
+    /// It could not be read, and another process holds its files so they
+    /// could neither be deleted nor renamed aside. Nothing was recorded or
+    /// changed; the next writer regenerates it.
+    RegeneratePending,
+}
+
+impl Opened {
+    /// The store, unless the regeneration is pending.
+    #[must_use]
+    pub fn store(self) -> Option<Store> {
+        match self {
+            Self::Ready(s) | Self::Regenerated(s) => Some(s),
+            Self::RegeneratePending => None,
+        }
+    }
+
+    /// It was regenerated.
+    #[must_use]
+    pub fn regenerated(&self) -> bool {
+        matches!(self, Self::Regenerated(_))
+    }
+
+    /// The regeneration is pending.
+    #[must_use]
+    pub fn pending(&self) -> bool {
+        matches!(self, Self::RegeneratePending)
+    }
+}
+
+/// File operations a regeneration makes: the seam a test uses to refuse
+/// them as Windows does for a mapped file.
+trait Files {
+    fn remove(&self, path: &Path) -> std::io::Result<()>;
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+}
+
+/// The real file system.
+struct Real;
+
+impl Files for Real {
+    fn remove(&self, path: &Path) -> std::io::Result<()> {
+        fs::remove_file(path)
+    }
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        fs::rename(from, to)
+    }
+}
+
+/// A name beside `path` that [`is_own_temporary`] claims, so the next
+/// regeneration deletes it: `.graph.base.aside.<pid>.<nanos>.tmp`.
+fn aside_name(path: &Path) -> PathBuf {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(BASE_FILE);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    path.with_file_name(format!(".{name}.aside.{}.{nanos}.tmp", std::process::id()))
+}
+
+/// Delete the store's own files: a data file that cannot be deleted is
+/// renamed aside; a temporary that cannot be deleted stays (a reader may
+/// still map one renamed aside earlier). `false` when a data file could be
+/// neither deleted nor renamed.
+fn clear(dir: &Path, files: &impl Files) -> Result<bool, OpenError> {
+    let data = [dir.join(BASE_FILE), dir.join(WAL_FILE)];
+    for path in own_files(dir)? {
+        let Err(e) = files.remove(&path) else { continue };
+        if e.kind() == std::io::ErrorKind::NotFound {
+            continue;
+        }
+        if !data.contains(&path) {
+            continue;
+        }
+        if files.rename(&path, &aside_name(&path)).is_err() {
+            return Ok(false);
+        }
+    }
+    graph_r::fsio::sync_dir(dir);
+    Ok(true)
+}
+
 /// A reader's `Busy` (a log ahead of its base) or a missing base.
 fn is_busy_or_absent(e: &graph_r::Error) -> bool {
     match e {
@@ -205,21 +325,21 @@ fn lock(dir: &Path, wait: Duration) -> Result<fs::File, OpenError> {
 }
 
 /// Open the store in `dir` read-write, created when absent and regenerated
-/// when damaged; `true` beside it when it was regenerated (empty, the old
-/// data gone). The one writable open of a describe store.
-pub fn open_or_regenerate(dir: impl AsRef<Path>) -> Result<(Store, bool), OpenError> {
+/// when damaged (see [`Opened`]). The one writable open of a describe store.
+pub fn open_or_regenerate(dir: impl AsRef<Path>) -> Result<Opened, OpenError> {
     open_or_regenerate_cfg(dir, Config::default())
 }
 
 /// [`open_or_regenerate`] with an explicit configuration; its `lock_wait`
 /// also bounds the wait for the commit lock a regeneration takes.
-pub fn open_or_regenerate_cfg(
-    dir: impl AsRef<Path>,
-    cfg: Config,
-) -> Result<(Store, bool), OpenError> {
-    let dir = dir.as_ref();
+pub fn open_or_regenerate_cfg(dir: impl AsRef<Path>, cfg: Config) -> Result<Opened, OpenError> {
+    open_with(dir.as_ref(), cfg, &Real)
+}
+
+fn open_with(dir: &Path, cfg: Config, files: &impl Files) -> Result<Opened, OpenError> {
     match Store::open_or_create(dir, cfg) {
-        Ok(s) => return Ok((s, false)),
+        Ok(s) if !legacy_ids(&s) => return Ok(Opened::Ready(s)),
+        Ok(_) => {}
         Err(e) if !damaged(dir, &e) => return Err(e.into()),
         Err(_) => {}
     }
@@ -231,21 +351,16 @@ pub fn open_or_regenerate_cfg(
         // it meanwhile. No compaction can be in flight now, so a log ahead
         // of its base (`Busy` to a reader) is damage too, and a log with no
         // base is the leftover of a creation that never finished.
-        match Store::open_read_only(dir) {
-            Ok(_) => {}
-            Err(e) if damaged(dir, &e) || is_busy_or_absent(&e) => {
-                for path in own_files(dir)? {
-                    match fs::remove_file(&path) {
-                        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-                        _ => {}
-                    }
-                }
-                graph_r::fsio::sync_dir(dir);
-            }
+        let rebuild = match Store::open_read_only(dir) {
+            Ok(s) => legacy_ids(&s),
+            Err(e) if damaged(dir, &e) || is_busy_or_absent(&e) => true,
             Err(e) => return Err(e.into()),
+        };
+        if rebuild && !clear(dir, files)? {
+            return Ok(Opened::RegeneratePending);
         }
     }
-    Ok((Store::open_or_create(dir, cfg)?, true))
+    Ok(Opened::Regenerated(Store::open_or_create(dir, cfg)?))
 }
 
 /// Open the store in `dir` for lookups: `None` when it is damaged (answer
@@ -254,6 +369,7 @@ pub fn open_or_regenerate_cfg(
 pub fn open_for_lookup(dir: impl AsRef<Path>) -> Result<Option<Store>, graph_r::Error> {
     let dir = dir.as_ref();
     match Store::open_read_only(dir) {
+        Ok(s) if legacy_ids(&s) => Ok(None),
         Ok(s) => Ok(Some(s)),
         Err(e) if damaged(dir, &e) => Ok(None),
         // A log ahead of its base is a compaction in flight, unless it
@@ -264,6 +380,7 @@ pub fn open_for_lookup(dir: impl AsRef<Path>) -> Result<Option<Store>, graph_r::
                 .ok()
                 .filter(|f| check_entry(dir.join(LOCK_FILE)).is_ok() && f.try_lock().is_ok());
             match (held, Store::open_read_only(dir)) {
+                (_, Ok(s)) if legacy_ids(&s) => Ok(None),
                 (_, Ok(s)) => Ok(Some(s)),
                 (_, Err(e)) if damaged(dir, &e) => Ok(None),
                 (Some(_), Err(graph_r::Error::Busy { .. })) => Ok(None),
@@ -296,11 +413,34 @@ const DAY_MS: u64 = 86_400_000;
 /// Remove from the store in `dir` the tables no describe or ingest has
 /// written or touched in `max_age_days`, with their columns (see
 /// [`state::prune`]): one transaction and one compaction, or no write at all
-/// when nothing is that old. Opened through [`open_or_regenerate`]; `true`
-/// beside the count when the store was regenerated instead (then nothing was
-/// left to prune).
-pub fn prune(dir: impl AsRef<Path>, max_age_days: u32) -> Result<(Pruned, bool), OpenError> {
+/// when nothing is that old. Opened through [`open_or_regenerate`]: beside
+/// the count, how the open went (a regenerated store had nothing left to
+/// prune; a pending one was not touched).
+pub fn prune(dir: impl AsRef<Path>, max_age_days: u32) -> Result<(Pruned, Regen), OpenError> {
     prune_at(dir, max_age_days, graph_r::fsio::now_ms())
+}
+
+/// What a writable open had to do, beside its result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Regen {
+    /// Nothing: the store was readable.
+    No,
+    /// It was regenerated empty.
+    Done,
+    /// It needs regenerating, and another process holds its files.
+    Pending,
+}
+
+impl Regen {
+    /// How `o` went.
+    #[must_use]
+    pub fn of(o: &Opened) -> Self {
+        match o {
+            Opened::Ready(_) => Self::No,
+            Opened::Regenerated(_) => Self::Done,
+            Opened::RegeneratePending => Self::Pending,
+        }
+    }
 }
 
 /// [`prune`] as of `now_ms`.
@@ -308,15 +448,116 @@ pub fn prune_at(
     dir: impl AsRef<Path>,
     max_age_days: u32,
     now_ms: u64,
-) -> Result<(Pruned, bool), OpenError> {
-    let (store, regenerated) = open_or_regenerate(dir)?;
+) -> Result<(Pruned, Regen), OpenError> {
+    let opened = open_or_regenerate(dir)?;
+    let regen = Regen::of(&opened);
+    let Some(store) = opened.store() else { return Ok((Pruned::default(), regen)) };
     let cutoff = now_ms.saturating_sub(u64::from(max_age_days) * DAY_MS);
-    Ok((state::prune(&store, cutoff)?, regenerated))
+    Ok((state::prune(&store, cutoff)?, regen))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use graph_r::{DocRecord, EdgeType, UrlKey};
+
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("crab-life-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn damaged_store(name: &str) -> PathBuf {
+        let d = dir(name);
+        drop(Store::open_or_create(&d, Config::default()).unwrap());
+        fs::write(d.join(BASE_FILE), b"not a base").unwrap();
+        d
+    }
+
+    /// Deletes refused as Windows refuses a mapped file (os error 1224);
+    /// renames allowed or refused.
+    struct Mapped {
+        rename: bool,
+    }
+
+    impl Files for Mapped {
+        fn remove(&self, _: &Path) -> std::io::Result<()> {
+            Err(std::io::Error::from_raw_os_error(1224))
+        }
+        fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            if self.rename {
+                fs::rename(from, to)
+            } else {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            }
+        }
+    }
+
+    fn asides(d: &Path) -> usize {
+        fs::read_dir(d)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains(".aside."))
+            .count()
+    }
+
+    #[test]
+    fn a_mapped_store_is_renamed_aside_and_rebuilt() {
+        let d = damaged_store("aside");
+        let o = open_with(&d, Config::default(), &Mapped { rename: true }).unwrap();
+        assert!(o.regenerated(), "{o:?}");
+        assert!(o.store().unwrap().is_empty());
+        assert!(asides(&d) >= 1, "the old base waits aside");
+        // The next regeneration deletes what was set aside.
+        drop(Store::open_or_create(&d, Config::default()).unwrap());
+        fs::write(d.join(BASE_FILE), b"not a base").unwrap();
+        assert!(open_or_regenerate(&d).unwrap().regenerated());
+        assert_eq!(asides(&d), 0);
+    }
+
+    #[test]
+    fn a_refused_rename_is_a_soft_pending_never_an_error() {
+        let d = damaged_store("pending");
+        let o = open_with(&d, Config::default(), &Mapped { rename: false }).unwrap();
+        assert!(o.pending() && !o.regenerated(), "{o:?}");
+        assert!(o.store().is_none());
+        assert_eq!(fs::read(d.join(BASE_FILE)).unwrap(), b"not a base", "nothing changed");
+        assert!(regenerate_needed(&d));
+        // Once the holder lets go, the next writer regenerates it.
+        assert!(open_or_regenerate(&d).unwrap().regenerated());
+    }
+
+    #[test]
+    fn a_store_keyed_by_the_old_project_spelling_regenerates() {
+        let d = dir("legacy");
+        let s = Store::open_or_create(&d, Config::default()).unwrap();
+        let ds = "sql://bigquery/My-Proj/mart";
+        s.transact(|w| {
+            for url in [state::ROOT, ds] {
+                w.upsert_node(&DocRecord {
+                    url,
+                    url_key: UrlKey::of(url),
+                    content_hash: 0,
+                    fetched_at_ms: 1,
+                    title: Some(url),
+                    snippet: None,
+                    etag: None,
+                    pinned: false,
+                })?;
+            }
+            w.set_edges(UrlKey::of(state::ROOT), &[(UrlKey::of(ds), EdgeType::Contains, 1)]);
+            Ok(())
+        })
+        .unwrap();
+        drop(s);
+        assert!(regenerate_needed(&d), "lookups see nothing recorded");
+        let o = open_or_regenerate(&d).unwrap();
+        assert!(o.regenerated());
+        assert!(o.store().unwrap().is_empty());
+        assert!(!regenerate_needed(&d));
+        assert!(matches!(open_or_regenerate(&d).unwrap(), Opened::Ready(_)));
+    }
 
     #[test]
     fn only_graph_r_temporaries_of_the_data_files_are_own() {

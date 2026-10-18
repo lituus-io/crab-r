@@ -164,14 +164,18 @@ fn the_describe_open_regenerates_a_damaged_store_and_it_is_usable() {
             std::fs::write(d.join(".graph.base.1.2.tmp"), b"leftover").unwrap();
             std::fs::write(d.join(".graph.basement.1.tmp"), b"not ours").unwrap();
             damage(file, how, &d);
-            let (store, regenerated) = open_or_regenerate(&d).unwrap();
+            let opened = open_or_regenerate(&d).unwrap();
+            let regenerated = opened.regenerated();
+            let store = opened.store().unwrap();
             assert!(regenerated, "{file} {how}");
             assert!(state::load(&store).is_empty(), "regenerated empty");
             state::save(&store, &report(), 3_000).unwrap();
             assert_eq!(state::load(&store).len(), 1, "{file} {how}: usable");
             drop(store);
             assert!(!regenerate_needed(&d));
-            let (again, regenerated) = open_or_regenerate(&d).unwrap();
+            let opened = open_or_regenerate(&d).unwrap();
+            let regenerated = opened.regenerated();
+            let again = opened.store().unwrap();
             assert!(!regenerated, "a healthy store is opened as it is");
             assert_eq!(state::load(&again).len(), 1);
             untouched_beside(&d);
@@ -188,7 +192,11 @@ fn ingest_regenerates_a_damaged_store() {
         damage(BASE_FILE, how, &d);
         let done = ingest_dir(&s(&d), NODES, EDGES).unwrap();
         assert!(done.regenerated && done.committed, "{how}");
-        assert!(done.to_json().ends_with(r#""regenerated":true}"#), "{}", done.to_json());
+        assert!(
+            done.to_json().ends_with(r#""regenerated":true,"regenerate_pending":false}"#),
+            "{}",
+            done.to_json()
+        );
         let again = ingest_dir(&s(&d), NODES, EDGES).unwrap();
         assert!(!again.regenerated && !again.committed);
         untouched_beside(&d);
@@ -248,7 +256,9 @@ fn a_locked_or_busy_store_is_never_deleted() {
     let d = populated("locked-healthy");
     let holder = Store::open(&d).unwrap();
     let lock = holder.commit_lock().unwrap();
-    let (store, regenerated) = open_or_regenerate(&d).unwrap();
+    let opened = open_or_regenerate(&d).unwrap();
+    let regenerated = opened.regenerated();
+    let store = opened.store().unwrap();
     assert!(!regenerated);
     assert_eq!(state::load(&store).len(), 1, "the original data");
     drop((store, lock));
@@ -269,7 +279,10 @@ fn a_locked_or_busy_store_is_never_deleted() {
     assert!(matches!(e, OpenError::Store(graph_r::Error::Locked)), "{e:?}");
     assert_eq!((bytes(&d.join(BASE_FILE)), bytes(&d.join(WAL_FILE))), before);
     drop(lock);
-    assert!(open_or_regenerate_cfg(&d, cfg).unwrap().1, "regenerated once the lock is free");
+    assert!(
+        open_or_regenerate_cfg(&d, cfg).unwrap().regenerated(),
+        "regenerated once the lock is free"
+    );
 
     // A log ahead of its base while the lock is held is a compaction in
     // flight: `Busy`, nothing deleted, for the writer and the reader alike.
@@ -288,7 +301,7 @@ fn a_locked_or_busy_store_is_never_deleted() {
     // writer.
     held.unlock().unwrap();
     assert!(regenerate_needed(&d));
-    assert!(open_or_regenerate(&d).unwrap().1);
+    assert!(open_or_regenerate(&d).unwrap().regenerated());
     untouched_beside(&d);
 }
 
@@ -373,4 +386,58 @@ fn a_pull_into_a_damaged_replica_regenerates_it_by_a_full_pull() {
     let pulled = Store::open_read_only(&replica).unwrap();
     assert_eq!(state::load(&pulled).len(), 1, "the published data");
     assert_eq!(bytes(&replica.join("notes.txt")), b"mine");
+}
+
+/// L10: a store another reader maps is regenerated, never an error. On
+/// Windows the mapped base cannot be deleted (os error 1224), so it is
+/// renamed aside and the reader keeps its mapping; elsewhere it is deleted
+/// while still mapped. Either way the writer gets a fresh store and the
+/// reader keeps answering from what it mapped.
+#[test]
+fn a_store_another_reader_maps_regenerates_around_it() {
+    use graph_r::{DocRecord, EdgeType, UrlKey};
+    let d = dir("mapped");
+    let ds = "sql://bigquery/Legacy-Proj/mart";
+    {
+        let s = Store::open_or_create(&d, Config::default()).unwrap();
+        s.transact(|w| {
+            for url in [state::ROOT, ds] {
+                w.upsert_node(&DocRecord {
+                    url,
+                    url_key: UrlKey::of(url),
+                    content_hash: 0,
+                    fetched_at_ms: 1,
+                    title: Some(url),
+                    snippet: None,
+                    etag: None,
+                    pinned: false,
+                })?;
+            }
+            w.set_edges(UrlKey::of(state::ROOT), &[(UrlKey::of(ds), EdgeType::Contains, 1)]);
+            Ok(())
+        })
+        .unwrap();
+        s.compact().unwrap();
+    }
+    // The reader maps the base it read: the old, legacy-keyed store.
+    let reader = Store::open_read_only(&d).unwrap();
+    assert!(reader.snapshot().node(UrlKey::of(ds)).is_some());
+
+    let opened = open_or_regenerate(&d).unwrap();
+    assert!(opened.regenerated() || opened.pending(), "{opened:?}");
+    if let Some(fresh) = opened.store() {
+        assert!(fresh.is_empty());
+    }
+    assert!(reader.snapshot().node(UrlKey::of(ds)).is_some(), "the reader keeps its mapping");
+    #[cfg(windows)]
+    {
+        let aside = std::fs::read_dir(&d)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains(".aside."))
+            .count();
+        assert!(aside >= 1, "the mapped base was renamed aside, not deleted");
+    }
+    drop(reader);
+    // With the reader gone, the next writer finds a readable, fresh store.
+    assert!(!open_or_regenerate(&d).unwrap().regenerated());
 }

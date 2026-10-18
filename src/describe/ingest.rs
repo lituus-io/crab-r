@@ -88,12 +88,15 @@ pub struct Ingested {
     /// The store could not be read and was regenerated empty first
     /// ([`ingest_dir`]).
     pub regenerated: bool,
+    /// The store needs regenerating and another process holds its files:
+    /// nothing was written this time ([`ingest_dir`]).
+    pub regenerate_pending: bool,
 }
 
 impl Ingested {
     /// As JSON: `{"committed", "created", "updated", "edges", "skipped":
     /// {name: count}, "rejected": [{"side", "index", "reason"}],
-    /// "regenerated"}`.
+    /// "regenerated", "regenerate_pending"}`.
     #[must_use]
     pub fn to_json(&self) -> String {
         let mut out = String::with_capacity(128 + 64 * self.rejected.len());
@@ -118,6 +121,7 @@ impl Ingested {
         }
         w.end_array();
         w.key("regenerated").bool(self.regenerated);
+        w.key("regenerate_pending").bool(self.regenerate_pending);
         w.end_object();
         out
     }
@@ -584,8 +588,11 @@ fn diff<'p>(
 /// [`ingest`] into the store at `dir`, created when absent and regenerated
 /// when it cannot be read ([`super::lifecycle::open_or_regenerate`]).
 pub fn ingest_dir(dir: &str, nodes_json: &str, edges_json: &str) -> Result<Ingested, String> {
-    let (store, regenerated) =
-        super::lifecycle::open_or_regenerate(dir).map_err(|e| format!("{dir}: {e}"))?;
+    let opened = super::lifecycle::open_or_regenerate(dir).map_err(|e| format!("{dir}: {e}"))?;
+    let regenerated = opened.regenerated();
+    let Some(store) = opened.store() else {
+        return Ok(Ingested { regenerate_pending: true, ..Ingested::default() });
+    };
     let mut out = ingest(&store, nodes_json, edges_json, graph_r::fsio::now_ms())?;
     out.regenerated = regenerated;
     Ok(out)
@@ -609,6 +616,9 @@ pub fn summary(i: &Ingested) -> String {
     }
     if i.regenerated {
         s.push_str("; the store could not be read and was regenerated");
+    }
+    if i.regenerate_pending {
+        s.push_str("; the store needs regenerating and another process holds it: nothing written");
     }
     s
 }
@@ -747,7 +757,7 @@ mod tests {
         i.rejected.push(Rejected { side: Side::Edge, index: 4, reason: "not an object" });
         assert_eq!(
             i.to_json(),
-            r#"{"committed":true,"created":1,"updated":0,"edges":0,"skipped":{"writes_to":2},"rejected":[{"side":"edge","index":4,"reason":"not an object"}],"regenerated":false}"#
+            r#"{"committed":true,"created":1,"updated":0,"edges":0,"skipped":{"writes_to":2},"rejected":[{"side":"edge","index":4,"reason":"not an object"}],"regenerated":false,"regenerate_pending":false}"#
         );
         assert_eq!(
             summary(&i),

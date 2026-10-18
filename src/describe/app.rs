@@ -836,12 +836,15 @@ pub fn prune(args: &[String]) -> Result<String, String> {
     let (Some(dir), Some(days)) = (args.first(), args.get(1).and_then(|d| d.parse().ok())) else {
         return Err("usage: crab-describe prune STORE_DIR DAYS".into());
     };
-    let (p, regenerated) =
+    use crate::describe::lifecycle::Regen;
+    let (p, regen) =
         crate::describe::lifecycle::prune(dir, days).map_err(|e| format!("{dir}: {e}"))?;
-    Ok(if regenerated {
-        format!("{dir} could not be read and was regenerated; nothing to prune\n")
-    } else {
-        format!("pruned {} tables, {} columns from {dir}\n", p.tables, p.columns)
+    Ok(match regen {
+        Regen::Done => format!("{dir} could not be read and was regenerated; nothing to prune\n"),
+        Regen::Pending => format!(
+            "{dir} could not be read and another process holds it: regenerate_pending, nothing pruned\n"
+        ),
+        Regen::No => format!("pruned {} tables, {} columns from {dir}\n", p.tables, p.columns),
     })
 }
 
@@ -908,13 +911,19 @@ pub async fn run(a: &Options, log: &mut impl FnMut(&str)) -> Result<Report, Stri
     let mut regenerated = false;
     let store = match &a.store {
         Some(dir) => {
-            let (s, r) = crate::describe::lifecycle::open_or_regenerate(dir)
+            let opened = crate::describe::lifecycle::open_or_regenerate(dir)
                 .map_err(|e| format!("{dir}: {e}"))?;
-            if r {
+            regenerated = opened.regenerated();
+            if regenerated {
                 log(&format!("warning: store {dir} could not be read; regenerated empty"));
             }
-            regenerated = r;
-            Some(s)
+            if opened.pending() {
+                log(&format!(
+                    "warning: store {dir} needs regenerating and another process holds it \
+                     (regenerate_pending); this run records nothing in it"
+                ));
+            }
+            opened.store()
         }
         None => None,
     };
