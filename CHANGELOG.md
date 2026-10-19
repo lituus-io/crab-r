@@ -4,6 +4,41 @@ All notable changes to crab-r are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.2
+
+- **Fix: structured output on strict OpenAI-compatible servers.** The JSON
+  schemas the crate sends as `response_format` (`describe`'s draft and judge
+  replies, the engine's table-linking reply) were built for Vertex AI's
+  schema subset: open objects and optional fields. Sent with
+  `"strict": true`, a server that enforces OpenAI's strict structured-output
+  rules refused every one with `400 Invalid schema for response_format
+  'output': ... 'additionalProperties' is required to be supplied and to be
+  false`, so `describe` drafted nothing through it.
+- **Strict by construction, in one place.** `llm::strict::write_strict`
+  rewrites a schema as it is serialised: every object node, at every depth,
+  gets `"additionalProperties": false` and `required` listing every
+  property; a property that was optional becomes nullable (`[type, "null"]`,
+  with `null` added to an `enum`, or `anyOf` with `{"type": "null"}` when
+  the node has no `type`); sub-schemas are walked through `properties`,
+  `items`, `anyOf` / `oneOf` / `allOf`, `prefixItems` and `$defs`. The
+  OpenAI backend applies it to every schema it sends, so a schema built
+  anywhere, now or later, reaches the wire compliant. The rewrite borrows
+  the source text, is idempotent, and refuses rather than sends text that
+  is not one JSON document, an object with a duplicate key (parsers differ
+  on which one wins) or a `properties` that is not an object. The reply parsers already read `null` as absent. Requests
+  stay unary unless `--openai-stream` is given.
+- The Vertex AI backend is unchanged: its native `responseSchema` has no
+  strict mode and accepts optional fields.
+- Tests: a property test over arbitrary column names and check ids that
+  every schema the crate can send comes out strict (closed objects,
+  `required` equal to the property keys), idempotent, and with every enum
+  value kept; the schemas as built are shown non-compliant; an offline
+  gateway that refuses non-strict schemas with OpenAI's 400 runs a whole
+  `describe` (draft and judge) and parses replies that use `null` for every
+  optional field; a live check of the real draft and judge schemas against
+  an OpenAI-compatible server; a fuzz target (`fuzz_strict`): arbitrary
+  text gives an error or valid JSON that is its own rewrite.
+
 ## 0.5.1
 
 - **`exec::query` and Python `crab_r.query` / `query_async`: one guarded,

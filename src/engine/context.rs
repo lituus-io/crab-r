@@ -358,19 +358,25 @@ impl Cards {
             names.push(format!("{}.{}", tb.dataset_name, tb.name));
             ids.push(t);
         }
-        let mut schema =
-            String::with_capacity(64 + names.iter().map(|n| n.len() + 3).sum::<usize>());
-        let mut w = Writer::new(&mut schema);
-        w.begin_object().key("type").string("object").key("properties").begin_object();
-        w.key("tables").begin_object().key("type").string("array").key("items").begin_object();
-        w.key("type").string("string").key("enum").begin_array();
-        for n in &names {
-            w.string(n);
-        }
-        w.end_array().end_object().end_object().end_object();
-        w.key("required").begin_array().string("tables").end_array().end_object();
+        let schema = link_schema(&names);
         Self { text, names, ids, schema }
     }
+}
+
+/// JSON schema of the linking reply: `{"tables": [...]}`, each one of
+/// `names`.
+pub(crate) fn link_schema(names: &[String]) -> String {
+    let mut schema = String::with_capacity(64 + names.iter().map(|n| n.len() + 3).sum::<usize>());
+    let mut w = Writer::new(&mut schema);
+    w.begin_object().key("type").string("object").key("properties").begin_object();
+    w.key("tables").begin_object().key("type").string("array").key("items").begin_object();
+    w.key("type").string("string").key("enum").begin_array();
+    for n in names {
+        w.string(n);
+    }
+    w.end_array().end_object().end_object().end_object();
+    w.key("required").begin_array().string("tables").end_array().end_object();
+    schema
 }
 
 /// The tables named in a `{"tables": [...]}` reply, in reply order, mapped

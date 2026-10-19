@@ -24,6 +24,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_strict"
+path = "fuzz_targets/fuzz_strict.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_date"
 path = "fuzz_targets/fuzz_date.rs"
 test = false

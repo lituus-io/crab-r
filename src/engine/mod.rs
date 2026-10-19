@@ -78,7 +78,7 @@ pub use crate::link::SchemaIndex;
 pub use cache::{AnswerCache, CachedAnswer, MemoryCache, NoCache};
 
 pub mod cache;
-mod context;
+pub(crate) mod context;
 mod vote;
 
 /// Engine settings.

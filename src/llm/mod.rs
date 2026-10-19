@@ -22,7 +22,9 @@
 //!   objstore-r's authorised HTTPS transport.
 //! - [`openai::OpenAi`] (feature `openai`): any OpenAI-compatible
 //!   chat-completions server (vLLM, llama.cpp, hosted APIs, Vertex AI's
-//!   compatible endpoint), including grammar-constrained decoding.
+//!   compatible endpoint), including grammar-constrained decoding. Its JSON
+//!   schemas go out through [`strict::write_strict`], so every schema meets
+//!   OpenAI's strict structured-output rules whoever built it.
 //!
 //! Hosts add any other provider by implementing [`Model`].
 
@@ -44,6 +46,7 @@ pub mod error;
 pub mod openai;
 pub mod replay;
 pub mod request;
+pub mod strict;
 #[cfg(feature = "vertex")]
 pub mod vertex;
 
