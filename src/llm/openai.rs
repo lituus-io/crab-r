@@ -15,7 +15,9 @@
 //! - **Grammar-constrained decoding** where the server has it, declared by
 //!   the model's [`Caps`]: a Lark grammar goes out as `guided_grammar`
 //!   (vLLM / llguidance), a GBNF grammar as `grammar` (llama.cpp). A JSON
-//!   schema maps to `response_format`.
+//!   schema maps to `response_format` with `strict: true`, rewritten by
+//!   [`strict::write_strict`] into the form strict servers accept (every
+//!   object closed, every property required, optional ones nullable).
 //! - Provider-specific switches (reasoning effort, safety settings, ...) go
 //!   in [`OpenAiConfig::extra`], raw JSON members appended to every body, so
 //!   no provider is special-cased here.
@@ -24,7 +26,7 @@ use crate::base::json::{self, Event, Scanner, Writer};
 use crate::llm::request::{
     estimate_tokens, Candidates, Constraint, Finish, Flow, GenRequest, Sink, Usage,
 };
-use crate::llm::{Caps, Error, Model, Result};
+use crate::llm::{strict, Caps, Error, Model, Result};
 use objstore_r::transport::{BodyStream, Request, Transport};
 use objstore_r::Bytes;
 use std::cell::RefCell;
@@ -136,6 +138,10 @@ impl<T: Transport> OpenAi<T> {
                 if !caps.constraints.json_schema {
                     return Err(Error::Unsupported("json schema"));
                 }
+                // `strict: true` holds the server to the schema, and holds
+                // the schema to the strict rules: rewritten here, the one
+                // place a schema reaches the wire, so no caller can send one
+                // a strict server refuses.
                 w.key("response_format").begin_object().key("type").string("json_schema");
                 w.key("json_schema")
                     .begin_object()
@@ -143,10 +149,9 @@ impl<T: Transport> OpenAi<T> {
                     .string("output")
                     .key("strict")
                     .bool(true)
-                    .key("schema")
-                    .raw(schema)
-                    .end_object();
-                w.end_object();
+                    .key("schema");
+                strict::write_strict(schema, &mut w)?;
+                w.end_object().end_object();
             }
             Constraint::Lark(g) => {
                 if !caps.constraints.lark {

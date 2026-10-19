@@ -13,6 +13,7 @@
 use crab_r::base::batch::{Batch, Cell, ColType};
 use crab_r::describe::app;
 use crab_r::describe::describe::{describe, DescribeConfig, Target};
+use crab_r::describe::generate::Value;
 use crab_r::exec::{DryRun, QueryResult, RunOpts, TableMeta, TableMetadata, Warehouse};
 use crab_r::lineage::NoLineage;
 use crab_r::llm::request::{Part, Prompt};
@@ -54,6 +55,17 @@ struct Server {
 }
 
 fn serve(replies: Vec<String>, status: u16) -> Server {
+    serve_with(replies, status, false)
+}
+
+/// [`serve`], but refusing a structured request whose schema breaks
+/// OpenAI's strict structured-output rules (`strict: true`) with the 400 an
+/// OpenAI-compatible gateway answers, as the hosted API does.
+fn serve_strict(replies: Vec<String>) -> Server {
+    serve_with(replies, 200, true)
+}
+
+fn serve_with(replies: Vec<String>, status: u16, strict: bool) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://127.0.0.1:{}/v1", listener.local_addr().unwrap().port());
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -63,9 +75,21 @@ fn serve(replies: Vec<String>, status: u16) -> Server {
         for sock in listener.incoming() {
             let Ok(mut sock) = sock else { continue };
             let Some(req) = read_request(&mut sock) else { continue };
+            let refusal = if strict { strict_refusal(&req.body) } else { None };
             let reply = &replies[next.min(replies.len() - 1)];
-            next += 1;
-            let resp = if status != 200 {
+            if refusal.is_none() {
+                next += 1;
+            }
+            let resp = if let Some(msg) = refusal {
+                let body = format!(
+                    r#"{{"error":{{"message":{},"type":"invalid_request_error","param":"response_format","code":null}}}}"#,
+                    quoted(&msg)
+                );
+                format!(
+                    "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            } else if status != 200 {
                 let body = r#"{"error":{"message":"invalid api key","code":401}}"#;
                 format!(
                     "HTTP/1.1 {status} Unauthorized\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -141,6 +165,90 @@ fn candidates(body: &str) -> usize {
     body.split_once(r#""n":"#).map_or(1, |(_, rest)| {
         rest.chars().take_while(char::is_ascii_digit).collect::<String>().parse().unwrap_or(1)
     })
+}
+
+/// The 400 message for a request whose `response_format` schema breaks the
+/// strict rules, `None` when it complies (or asks for no schema). Checked
+/// independently of the crate's own normaliser: under `strict: true` every
+/// object schema at every depth (`type` "object", or carrying `properties`)
+/// must set `additionalProperties` to `false` and list every property in
+/// `required`.
+fn strict_refusal(body: &str) -> Option<String> {
+    let v = Value::parse(body).expect("request body is JSON");
+    let js = v.get("response_format")?.get("json_schema")?;
+    assert_eq!(js.get("strict"), Some(&Value::Bool(true)), "strict mode is asked for");
+    let schema = js.get("schema").expect("a schema");
+    let mut path = Vec::new();
+    strict_violation(schema, &mut path).map(|why| {
+        format!(
+            "Invalid schema for response_format 'output': In context=({}), {why}.",
+            path.iter().map(|p| format!("'{p}'")).collect::<Vec<_>>().join(", ")
+        )
+    })
+}
+
+fn strict_violation(node: &Value, path: &mut Vec<String>) -> Option<String> {
+    let Value::Obj(members) = node else { return None };
+    let ty = node.get("type");
+    let is_object = node.get("properties").is_some()
+        || matches!(ty, Some(Value::Str(t)) if t == "object")
+        || matches!(ty, Some(Value::Arr(ts)) if ts.contains(&Value::Str("object".into())));
+    if is_object {
+        if node.get("additionalProperties") != Some(&Value::Bool(false)) {
+            return Some(
+                "'additionalProperties' is required to be supplied and to be false".into(),
+            );
+        }
+        let keys: Vec<&str> = match node.get("properties") {
+            Some(Value::Obj(p)) => p.iter().map(|(k, _)| k.as_str()).collect(),
+            _ => Vec::new(),
+        };
+        let required: Vec<&str> = node
+            .arr("required")
+            .iter()
+            .filter_map(|r| if let Value::Str(s) = r { Some(s.as_str()) } else { None })
+            .collect();
+        if let Some(k) = keys.iter().find(|k| !required.contains(k)) {
+            return Some(format!(
+                "'required' is required to be supplied and to be an array including every key in properties. Missing '{k}'"
+            ));
+        }
+        if let Some(k) = required.iter().find(|k| !keys.contains(k)) {
+            return Some(format!("'required' names '{k}', which is not in properties"));
+        }
+    }
+    for (key, child) in members {
+        match (key.as_str(), child) {
+            ("properties" | "$defs" | "definitions", Value::Obj(map)) => {
+                for (name, sub) in map {
+                    path.push(key.clone());
+                    path.push(name.clone());
+                    if let Some(why) = strict_violation(sub, path) {
+                        return Some(why);
+                    }
+                    path.truncate(path.len() - 2);
+                }
+            }
+            ("items" | "not", sub) => {
+                path.push(key.clone());
+                if let Some(why) = strict_violation(sub, path) {
+                    return Some(why);
+                }
+                path.pop();
+            }
+            ("anyOf" | "oneOf" | "allOf", Value::Arr(subs)) => {
+                for (i, sub) in subs.iter().enumerate() {
+                    path.push(format!("{key}{i}"));
+                    if let Some(why) = strict_violation(sub, path) {
+                        return Some(why);
+                    }
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn quoted(s: &str) -> String {
@@ -416,4 +524,43 @@ fn describe_runs_unary_through_the_gateway_and_the_key_stays_out_of_its_outputs(
         assert!(!text.contains(SECRET), "{text}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The draft and judge schemas `describe` really sends pass a gateway that
+/// enforces OpenAI's strict structured-output rules (a non-compliant schema
+/// is refused with a 400 before any model runs), and the replies a strict
+/// model gives — `null` for every field the reply may leave out — parse.
+#[test]
+fn describe_schemas_pass_a_strict_gateway_and_null_optionals_parse() {
+    let sql = "SELECT order_id, amount AS amount_usd FROM lab.raw.orders WHERE status != 'TEST'";
+    let draft = r#"{"table_description": "Orders excluding test orders.", "grain": null,
+        "table_checks": null,
+        "columns": [{"column": "amount_usd", "description": "Order amount in USD.", "semantic_type": "currency_amount",
+                     "unit": null, "checks": [{"claim": "non-negative", "expr": "COUNTIF(amount_usd < 0)", "expect": "0"}],
+                     "statements": null}]}"#;
+    let judge = r#"{"verdicts": [{"check": "1", "verdict": "supports", "reason": "0"}],
+        "columns": [{"column": "amount_usd", "description": "Order amount in USD.", "confidence": "high"}],
+        "table_description": null, "more_checks": null}"#;
+    let server = serve_strict(vec![draft.into(), judge.into()]);
+    let (_, opts) = options(&server.url, &[]);
+    let model = opts.openai().unwrap().connect().unwrap();
+    let wh = Wh { metas: [("lab.raw.orders".to_owned(), RAW.to_owned())].into(), ..Wh::default() };
+    let target =
+        Target::Sql { sql: sql.into(), target: None, default_dataset: Some("lab.stg".into()) };
+    let cfg = DescribeConfig::new(vec![target], "US", "lab");
+    let report = block_on(describe(&model, &wh, &NoLineage, &cfg)).unwrap();
+    assert_eq!(report.tables.len(), 1, "{:?}", report.warnings);
+    let t = &report.tables[0];
+    let warnings = format!("{:?} {:?}", report.warnings, t.warnings);
+    assert!(!warnings.contains("400"), "a strict gateway refused a schema: {warnings}");
+    assert_eq!(t.description.as_deref(), Some("Orders excluding test orders."), "{warnings}");
+    let amount = t.columns.iter().find(|c| c.column == "amount_usd").expect("amount_usd");
+    assert_eq!(amount.description.as_deref(), Some("Order amount in USD."), "{warnings}");
+    let seen = server.seen.lock().unwrap();
+    // Counted: draft and judge, each structured, each accepted first time.
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    for r in seen.iter() {
+        assert!(!r.body.contains("\"stream\""), "unary: {}", r.body);
+        assert_eq!(strict_refusal(&r.body), None);
+    }
 }
