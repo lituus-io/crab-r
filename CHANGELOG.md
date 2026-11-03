@@ -4,6 +4,25 @@ All notable changes to crab-r are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.3
+
+- Security: every lockfile (crate, Python binding, fuzz) refreshed to
+  patched releases. The PyPI wheels are built from these.
+  - rustls-webpki 0.103.16 and webpki-roots 1.0.11 (RUSTSEC-2026-0382,
+    -0381): certificate paths through the distrusted emSign intermediates,
+    whose private keys are public, are rejected. This is the TLS stack the
+    model-server and objstore-r HTTP clients use.
+  - zstd 0.13.4, zstd-safe 7.4.0 and zstd-sys 2.1.2 (RUSTSEC-2026-0391,
+    -0398, -0403, -0410, plus the unsound notices RUSTSEC-2026-0395 to
+    -0397 and -0399 to -0406).
+- Requires the sibling patch releases carrying the same refresh: uu-graph-r
+  0.6.1, uu-link-r 0.4.5 and uu-objstore-r 0.4.2 (from 0.6.0, 0.4.4 and
+  0.4.1). The sibling pins move with them.
+- The Security workflow fails only on vulnerabilities. Unmaintained and
+  unsound advisories and yanked crates are reported as warnings on the run
+  instead of failing it.
+- No API or behaviour change.
+
 ## 0.5.2
 
 - **Fix: structured output on strict OpenAI-compatible servers.** The JSON
