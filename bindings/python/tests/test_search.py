@@ -1,6 +1,6 @@
 # Author: spicyzhug@gmail.com
 # Copyright: lituus-io, all rights reserved
-"""The 0.5.3 surface: search_catalog and search_catalog_async. Unusable
+"""The 0.5.4 surface: search_catalog and search_catalog_async. Unusable
 arguments are ValueErrors before any credential is looked for; entries are
 dicts in a CatalogEntries list with an explicit `truncated`; every failure
 is a SearchError with a `.reason`; the token goes in the authorization
