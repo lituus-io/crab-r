@@ -124,6 +124,38 @@ async def query_async(sql: str, project: str, location: str | None = None, acces
                       budget_tokens: int | None = None) -> QueryRows:
     """`query` as an awaitable on the shared runtime; cancelling it cancels the request."""
 
+class SearchError(CrabError):
+    """A `search_catalog` failed. The text never holds the token or the catalog's response."""
+
+    reason: str
+    """`no_credentials`, `expired`, `no_access`, `not_found`, `invalid_query`, `timeout`, `unreachable` or
+    `refused_by_guard`."""
+
+class CatalogEntries(list[dict[str, Any]]):
+    """What a catalog search found: one dict per table or view, most relevant first."""
+
+    truncated: bool
+    """More entries matched than these."""
+
+def search_catalog(query: str, project: str, limit: int = 20, access_token: str | None = None,
+                   metadata_server: bool = False, timeout_ms: int = 10_000) -> CatalogEntries:
+    """BigQuery tables and views found by keyword in the Dataplex Universal Catalog.
+
+    One `searchEntries` request in `project` (where the search is attributed: the caller needs
+    `dataplex.projects.search` there), one page, with `system=bigquery (type=table OR type=view)` added to `query`.
+    The catalog answers with what the caller may see. Each dict holds, when the catalog gave them: `name`
+    (`"project.dataset.table"`), `project`, `type` (`"bigquery-table"`, `"bigquery-view"`), `system`, `location`,
+    `display_name`, `description` (at most 300 characters), `fqn`, `resource`, `updated`, `entry`; aspects and
+    labels are not returned. `query` is at most 256 bytes with no control characters, `project` a plain project id,
+    `limit` 1 to 100; anything else raises ValueError before a credential is looked for. Credentials:
+    `access_token=` as given, else Application Default Credentials with the metadata server forbidden unless
+    `metadata_server=True`. Raises SearchError otherwise.
+    """
+
+async def search_catalog_async(query: str, project: str, limit: int = 20, access_token: str | None = None,
+                               metadata_server: bool = False, timeout_ms: int = 10_000) -> CatalogEntries:
+    """`search_catalog` as an awaitable on the shared runtime; cancelling it cancels the request."""
+
 def describe_offline(store: str | None, catalog_metadata: list[dict[str, Any]] | str, **options: Any) -> dict[str, Any]:
     """Draft descriptions for the tables of `catalog_metadata` (what `table_meta` returned) with no Google client.
 

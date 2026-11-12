@@ -99,9 +99,12 @@ drafts = crab_r.describe_offline("state", meta, openai_url=url, openai_model=m, 
 rows = crab_r.query("SELECT * FROM `my-project.ops.resource_health`", "my-project",
                     access_token=token, max_rows=200, budget_tokens=2000)
 rows.truncated  # True when max_rows or budget_tokens cut any rows
+# Tables and views by keyword, from the Dataplex Universal Catalog: what the caller may see.
+found = crab_r.search_catalog("monthly active users", "my-project", limit=10, access_token=token)
+[e["name"] for e in found], found.truncated  # "project.dataset.table" names; True when more matched
 ```
 
-`table_meta_async`, `query_async` and `describe_offline_async` are
+`table_meta_async`, `query_async`, `search_catalog_async` and `describe_offline_async` are
 awaitables on one process-wide runtime; cancelling one cancels its requests.
 
 ## Layout

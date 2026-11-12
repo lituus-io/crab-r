@@ -10,7 +10,9 @@
 //!   statistics, no rows) and `datasets.get`;
 //! - `jobs.query`, and `jobs.getQueryResults` for a job this process issued
 //!   through a [`Tracked`] transport ([`OwnJobs`]);
-//! - Dataplex Data Lineage searches and process reads.
+//! - Dataplex Data Lineage searches and process reads;
+//! - one Dataplex Universal Catalog search, `searchEntries` in the `global`
+//!   location, with only its `query`, `pageSize` and `orderBy` parameters.
 //!
 //! **Queries** ([`RequestPolicy::check_query`], which objstore-r calls on
 //! every `jobs.query` and `jobs.insert` body under every policy): exactly one
@@ -46,6 +48,11 @@ pub const DEFAULT_GRAPH_DATASETS: [DatasetRef<'static>; 2] =
 
 const BQ: &str = "bigquery.googleapis.com";
 const LINEAGE: &str = "datalineage.googleapis.com";
+const CATALOG: &str = "dataplex.googleapis.com";
+/// The last path segment of the one catalog search allowed.
+const SEARCH_ENTRIES: &str = "global:searchEntries";
+/// The parameters that search may carry, each at most once.
+const SEARCH_PARAMS: [&str; 3] = ["query", "pageSize", "orderBy"];
 const TABLES_GET: &str = "/bigquery/v2/projects/{project}/datasets/{dataset}/tables/{table}";
 const RESULTS: &str = "/bigquery/v2/projects/{project}/queries/{job}";
 
@@ -71,6 +78,7 @@ pub const RULES: &[Rule<'static>] = &[
         LINEAGE,
         "/v1/projects/{project}/locations/{location}/processes/{process}",
     ),
+    Rule::new(Method::Post, CATALOG, "/v1/projects/{project}/locations/{location}:searchEntries"),
 ];
 
 /// Job ids this process's [`Tracked`] transports were handed by
@@ -258,6 +266,20 @@ impl RequestPolicy for MetadataGuard<'_> {
         if bq && segs.len() == 7 && segs[5] == "queries" {
             let own = self.own_jobs.is_some_and(|j| j.contains(segs[6]));
             return if own { Ok(()) } else { Err(endpoint("results of a job not issued here")) };
+        }
+        // /v1/projects/{p}/locations/global:searchEntries
+        if segs.len() == 6 && segs[5].ends_with(":searchEntries") {
+            if segs[5] != SEARCH_ENTRIES {
+                return Err(endpoint("a catalog search outside the global location"));
+            }
+            let mut seen = [false; SEARCH_PARAMS.len()];
+            for (key, _) in url.query_pairs() {
+                match SEARCH_PARAMS.iter().position(|p| *p == key) {
+                    Some(i) if !seen[i] => seen[i] = true,
+                    _ => return Err(endpoint("a catalog search parameter that is not allowed")),
+                }
+            }
+            return if seen[0] { Ok(()) } else { Err(endpoint("a catalog search with no query")) };
         }
         if url.query().is_some() {
             return Err(endpoint("a query string on this endpoint"));
@@ -449,6 +471,31 @@ mod tests {
         assert!(ok(Method::Post, &format!("{l}:searchLinks")));
         assert!(ok(Method::Get, &format!("{l}/processes/x")));
         assert!(!ok(Method::Delete, &format!("{l}/processes/x")));
+        let c = "https://dataplex.googleapis.com/v1/projects/p/locations";
+        assert!(ok(Method::Post, &format!("{c}/global:searchEntries?query=orders")));
+        assert!(ok(
+            Method::Post,
+            &format!("{c}/global:searchEntries?query=a%20b&pageSize=10&orderBy=relevance")
+        ));
+        for refused in [
+            format!("{c}/global:searchEntries"),
+            format!("{c}/global:searchEntries?pageSize=10"),
+            format!("{c}/us:searchEntries?query=orders"),
+            format!("{c}/global:searchEntries?query=a&query=b"),
+            format!("{c}/global:searchEntries?query=a&scope=organizations/1"),
+            format!("{c}/global:searchEntries?query=a&pageToken=t"),
+            format!("{c}/global:searchEntries?query=a&semanticSearch=true"),
+            format!("{c}/global:lookupEntry?query=a"),
+            format!("{c}/global/entryGroups?query=a"),
+            format!("{c}/global/entryGroups/g/entries/e"),
+            // The lineage host has no such method, the catalog host no other.
+            "https://datalineage.googleapis.com/v1/projects/p/locations/global:searchEntries?query=a"
+                .to_owned(),
+            format!("{c}/us:searchLinks"),
+        ] {
+            assert!(!ok(Method::Post, &refused), "{refused}");
+        }
+        assert!(!ok(Method::Get, &format!("{c}/global:searchEntries?query=orders")));
         assert!(!ok(Method::Get, "https://storage.googleapis.com/storage/v1/b/x/o/y?alt=media"));
         assert!(!ok(Method::Get, "http://metadata.google.internal/computeMetadata/v1/"));
         assert!(MetadataGuard::default()
