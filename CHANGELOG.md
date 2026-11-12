@@ -4,6 +4,40 @@ All notable changes to crab-r are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.3
+
+- **`search_catalog`: tables and views by keyword.** One
+  `searchEntries` request to the Dataplex Universal Catalog, in the `global`
+  location of the project the caller names, with the caller's own
+  credential (`access_token=` as given; otherwise Application Default
+  Credentials, the metadata server forbidden unless asked for). The text is
+  sent with `system=bigquery (type=table OR type=view)` after it, grouped
+  first when it uses `OR`, so an answer holds tables and views and nothing
+  from another system. One page: at most `limit` entries (default 20, at
+  most 100), with `truncated` set when more matched. The catalog applies
+  the caller's permissions, so an answer never holds what the caller may
+  not see.
+- **A fixed shape.** Each entry keeps `name` (`project.dataset.table`),
+  `project`, `type`, `system`, `location`, `display_name`, `description`
+  (cut at 300 characters), `fqn`, `resource`, `updated` and `entry`, each
+  when the catalog gave it. Aspects, labels and every other member are
+  dropped.
+- **One more route under the guard, and only that one.** `MetadataGuard`
+  allows `POST dataplex.googleapis.com/v1/projects/{project}/locations/global:searchEntries`
+  with `query` and, at most once each, `pageSize` and `orderBy`. Another
+  location, another method on that host, a repeated parameter, or `scope`,
+  `pageToken` or any other parameter is refused. The arguments and the
+  guard are checked before a credential is looked for.
+- **Typed failures.** `SearchError` with a `Failure`: `no_credentials`,
+  `expired`, `no_access`, `not_found`, `invalid_query`, `timeout`,
+  `unreachable`, `refused_by_guard`. Its message is fixed text or the
+  transport's own: never the token, never the catalog's response body.
+- Python: `search_catalog` and `search_catalog_async` return a
+  `CatalogEntries` list of dicts with `truncated`; unusable arguments raise
+  `ValueError`, everything else `SearchError` with a `.reason`.
+- A fuzz target, `fuzz_search`, over the response reader and the URL
+  builder.
+
 ## 0.5.2
 
 - **Fix: structured output on strict OpenAI-compatible servers.** The JSON

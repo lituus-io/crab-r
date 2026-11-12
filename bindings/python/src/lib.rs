@@ -42,6 +42,7 @@ use crab::exec::query::{
     scalar, QueryOptions, Rows, Scalar, DEFAULT_MAX_BYTES_BILLED, DEFAULT_MAX_ROWS,
     DEFAULT_TIMEOUT_MS,
 };
+use crab::exec::search::{self as cs, Found, SearchOptions};
 use crab::exec::table_meta::{self as tm, MetaClient, MetaOptions, Outcome};
 use crab::sql::refs::DatasetRef;
 use objstore_r::token::{Adc, MetadataPolicy};
@@ -53,6 +54,7 @@ use std::sync::OnceLock;
 
 create_exception!(crab_r, CrabError, pyo3::exceptions::PyException);
 create_exception!(crab_r, QueryError, CrabError);
+create_exception!(crab_r, SearchError, CrabError);
 
 /// Flags that switch a default off when given `False`.
 const NEGATED: [(&str, &str); 2] = [("profile", "--no-profile"), ("audit", "--no-audit")];
@@ -640,6 +642,138 @@ async fn run_query(call: QueryCall) -> Result<Rows, crab::exec::query::QueryErro
     crab::exec::query::query(call.adc, guard, &call.project, &call.sql, &opts).await
 }
 
+/// What `search_catalog` needs, owned, so its future can outlive the call.
+struct SearchCall {
+    query: String,
+    project: String,
+    limit: u32,
+    timeout_ms: u32,
+    adc: Result<Adc, objstore_r::Error>,
+}
+
+fn search_call(
+    query: String,
+    project: String,
+    limit: u32,
+    access_token: Option<String>,
+    metadata_server: bool,
+    timeout_ms: u32,
+) -> PyResult<SearchCall> {
+    // The arguments are checked before a credential is looked for.
+    cs::request_url(cs::CATALOG_ORIGIN, &project, &query, limit)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.message))?;
+    if timeout_ms == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err("timeout_ms must be positive"));
+    }
+    let adc = match access_token {
+        Some(t) => Adc::from_access_token(t),
+        None => Adc::discover_with(if metadata_server {
+            MetadataPolicy::Allow
+        } else {
+            MetadataPolicy::Forbid
+        }),
+    };
+    Ok(SearchCall { query, project, limit, timeout_ms, adc })
+}
+
+async fn run_search(call: SearchCall) -> Result<Found, cs::SearchError> {
+    let guard = MetadataGuard::default();
+    #[cfg(feature = "testing")]
+    let origin = TEST_ORIGIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    #[cfg(feature = "testing")]
+    let guard = if origin.is_some() { guard.with_loopback_http() } else { guard };
+    #[cfg(not(feature = "testing"))]
+    let origin: Option<String> = None;
+    let opts = SearchOptions {
+        limit: call.limit,
+        timeout_ms: call.timeout_ms,
+        endpoint: origin.as_deref(),
+        ..SearchOptions::default()
+    };
+    cs::search(call.adc, guard, &call.project, &call.query, &opts).await
+}
+
+/// `CatalogEntries`: a `list` subclass saying whether more entries matched
+/// than it holds, made once per process.
+fn entries_type(py: Python<'_>) -> PyResult<&Bound<'_, pyo3::types::PyType>> {
+    static ENTRIES: PyOnceLock<Py<pyo3::types::PyType>> = PyOnceLock::new();
+    let t = ENTRIES.get_or_try_init(py, || -> PyResult<_> {
+        let ns = PyDict::new(py);
+        ns.set_item("__module__", "crab_r")?;
+        ns.set_item(
+            "__doc__",
+            "Entries a catalog search found: a list of dicts, with `truncated`.",
+        )?;
+        let list = py.get_type::<pyo3::types::PyList>();
+        let t = py
+            .get_type::<pyo3::types::PyType>()
+            .call1(("CatalogEntries", (list,), ns))?
+            .cast_into::<pyo3::types::PyType>()?;
+        Ok(t.unbind())
+    })?;
+    Ok(t.bind(py))
+}
+
+/// A search's outcome as Python: a `CatalogEntries` list, or a
+/// `SearchError`.
+fn entries_or_error(py: Python<'_>, out: Result<Found, cs::SearchError>) -> PyResult<Py<PyAny>> {
+    let found = match out {
+        Ok(f) => f,
+        Err(e) => {
+            let err = SearchError::new_err(e.to_string());
+            err.value(py).setattr("reason", e.failure.as_str())?;
+            return Err(err);
+        }
+    };
+    let out = entries_type(py)?.call1((loads(py, &found.json)?,))?;
+    out.setattr("truncated", found.truncated)?;
+    Ok(out.unbind())
+}
+
+/// BigQuery tables and views found by keyword in the Dataplex Universal
+/// Catalog, searched in `project` with the caller's credential: a
+/// `CatalogEntries` list of dicts (`name` as `project.dataset.table`,
+/// `project`, `type`, `system`, `location`, `display_name`, `description`,
+/// `fqn`, `resource`, `updated`, `entry`; each present when the catalog
+/// gave it), whose `truncated` is True when more matched than `limit`.
+///
+/// One request, one page. The catalog answers with what the caller may
+/// see. A failure is a `SearchError` (`.reason`: `no_credentials`,
+/// `expired`, `no_access`, `not_found`, `invalid_query`, `timeout`,
+/// `unreachable`, `refused_by_guard`) whose text never holds the token.
+#[pyfunction]
+#[pyo3(signature = (query, project, limit = cs::DEFAULT_LIMIT, access_token = None, metadata_server = false, timeout_ms = cs::DEFAULT_TIMEOUT_MS))]
+fn search_catalog(
+    py: Python<'_>,
+    query: String,
+    project: String,
+    limit: u32,
+    access_token: Option<String>,
+    metadata_server: bool,
+    timeout_ms: u32,
+) -> PyResult<Py<PyAny>> {
+    let call = search_call(query, project, limit, access_token, metadata_server, timeout_ms)?;
+    let out = block(py, move || run_search(call))?;
+    entries_or_error(py, out)
+}
+
+/// [`search_catalog`] as an awaitable on the shared runtime; cancelling it
+/// cancels the request.
+#[pyfunction]
+#[pyo3(signature = (query, project, limit = cs::DEFAULT_LIMIT, access_token = None, metadata_server = false, timeout_ms = cs::DEFAULT_TIMEOUT_MS))]
+fn search_catalog_async<'py>(
+    py: Python<'py>,
+    query: String,
+    project: String,
+    limit: u32,
+    access_token: Option<String>,
+    metadata_server: bool,
+    timeout_ms: u32,
+) -> PyResult<Bound<'py, PyAny>> {
+    let call = search_call(query, project, limit, access_token, metadata_server, timeout_ms)?;
+    awaitable(py, move || run_search(call), entries_or_error)
+}
+
 /// `QueryRows`: a `list` subclass carrying what a query cost and whether
 /// it was cut, made once per process.
 fn rows_type(py: Python<'_>) -> PyResult<&Bound<'_, pyo3::types::PyType>> {
@@ -859,6 +993,8 @@ fn crab_r(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(table_meta_async, m)?)?;
     m.add_function(wrap_pyfunction!(query, m)?)?;
     m.add_function(wrap_pyfunction!(query_async, m)?)?;
+    m.add_function(wrap_pyfunction!(search_catalog, m)?)?;
+    m.add_function(wrap_pyfunction!(search_catalog_async, m)?)?;
     #[cfg(feature = "testing")]
     m.add_function(wrap_pyfunction!(_set_test_origin, m)?)?;
     m.add_function(wrap_pyfunction!(jobs_projection_sql, m)?)?;
@@ -879,6 +1015,8 @@ fn crab_r(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CrabError", m.py().get_type::<CrabError>())?;
     m.add("QueryError", m.py().get_type::<QueryError>())?;
     m.add("QueryRows", rows_type(m.py())?)?;
+    m.add("SearchError", m.py().get_type::<SearchError>())?;
+    m.add("CatalogEntries", entries_type(m.py())?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

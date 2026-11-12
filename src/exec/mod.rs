@@ -33,6 +33,7 @@ pub mod guard;
 pub mod metadata;
 #[cfg(feature = "http")]
 pub mod query;
+pub mod search;
 pub mod table_meta;
 
 pub use crate::base::batch::{Batch, ColType};
