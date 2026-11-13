@@ -4,6 +4,25 @@ All notable changes to crab-r are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.5
+
+- **Fix: `search_catalog` answered nothing where matches were visible.** It
+  asked the catalog for a page of `limit` entries (20 by default). The
+  catalog ranks every match first and applies the caller's permissions to
+  that page afterwards, and gives no next page for what it removed: where a
+  caller may see a small share of a large catalog, the page was twenty
+  entries they may not see, and the answer was empty. Against a catalog of
+  some 150,000 entries, a keyword with eleven visible matches answered none
+  at twenty a page and all eleven at a hundred or more; another needed five
+  hundred. The one page read is now always the catalog's largest (1,000),
+  which took the same time in every measurement, and `limit` is applied to
+  what comes back. `truncated` is unchanged: more matched than are returned.
+- **What is kept is still the limit.** Entries past `limit` are stepped
+  over as the response is scanned and never built, so an answer holds at
+  most `limit` entries of the fixed members whatever the page held. The
+  response cap stays 4 MiB (a full page measured about 1.2 MiB).
+- No API change; the guard's rule is unchanged.
+
 ## 0.5.4
 
 - **`search_catalog`: tables and views by keyword.** One

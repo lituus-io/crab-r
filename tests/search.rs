@@ -136,7 +136,7 @@ fn one_bodiless_post_scoped_to_tables_with_the_callers_token() {
     let line = req.lines().next().unwrap();
     assert_eq!(
         line,
-        "POST /v1/projects/home-proj/locations/global:searchEntries?query=monthly%20orders%20system%3Dbigquery%20%28type%3Dtable%20OR%20type%3Dview%29&pageSize=20&orderBy=relevance HTTP/1.1"
+        "POST /v1/projects/home-proj/locations/global:searchEntries?query=monthly%20orders%20system%3Dbigquery%20%28type%3Dtable%20OR%20type%3Dview%29&pageSize=1000&orderBy=relevance HTTP/1.1"
     );
     // The token is in the authorization header and nowhere else.
     assert_eq!(req.matches(TOKEN).count(), 1, "{req}");
