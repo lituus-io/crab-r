@@ -142,7 +142,8 @@ def search_catalog(query: str, project: str, limit: int = 20, access_token: str 
     """BigQuery tables and views found by keyword in the Dataplex Universal Catalog.
 
     One `searchEntries` request in `project` (where the search is attributed: the caller needs
-    `dataplex.projects.search` there), one page, with `system=bigquery (type=table OR type=view)` added to `query`.
+    `dataplex.projects.search` there), one page of the catalog's largest size (it filters a page by permission after
+    ranking it, so a small page can be empty while entries the caller may see matched), cut to `limit`, with `system=bigquery (type=table OR type=view)` added to `query`.
     The catalog answers with what the caller may see. Each dict holds, when the catalog gave them: `name`
     (`"project.dataset.table"`), `project`, `type` (`"bigquery-table"`, `"bigquery-view"`), `system`, `location`,
     `display_name`, `description` (at most 300 characters), `fqn`, `resource`, `updated`, `entry`; aspects and

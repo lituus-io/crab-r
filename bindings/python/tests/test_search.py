@@ -1,6 +1,6 @@
 # Author: spicyzhug@gmail.com
 # Copyright: lituus-io, all rights reserved
-"""The 0.5.4 surface: search_catalog and search_catalog_async. Unusable
+"""The 0.5.4 surface (0.5.5: the page asked for is the largest, not the limit): search_catalog and search_catalog_async. Unusable
 arguments are ValueErrors before any credential is looked for; entries are
 dicts in a CatalogEntries list with an explicit `truncated`; every failure
 is a SearchError with a `.reason`; the token goes in the authorization
@@ -173,25 +173,30 @@ def test_entries_are_dicts_with_only_the_listed_members(catalog):
     url = urllib.parse.urlsplit(path)
     assert (method, url.path, body) == ("POST", "/v1/projects/home-proj/locations/global:searchEntries", b"")
     assert urllib.parse.parse_qs(url.query) == {
-        "query": [f"monthly orders {SCOPE}"], "pageSize": ["20"], "orderBy": ["relevance"]}
+        "query": [f"monthly orders {SCOPE}"], "pageSize": ["1000"], "orderBy": ["relevance"]}
     lowered = {k.lower(): v for k, v in headers.items()}
     assert lowered["authorization"] == f"Bearer {TOKEN}" and lowered["content-length"] == "0"
     assert TOKEN not in path
 
 
 @needs_testing_build
-def test_the_limit_is_the_page_and_truncation_is_visible(catalog):
+def test_the_page_is_the_largest_whatever_the_limit_and_truncation_is_visible(catalog):
+    # The catalog filters a page by permission after ranking it, so a small
+    # page can be empty while visible entries matched: the largest page is
+    # asked for and the limit is applied to what comes back.
     one = crab_r.search_catalog("orders", "p", limit=1, access_token=TOKEN)
     assert len(one) == 1 and one.truncated
-    assert "pageSize=1&" in catalog.requests[0][1]
+    assert "pageSize=1000&" in catalog.requests[0][1]
     assert len(catalog.requests) == 1, "one page, one request"
+    both = crab_r.search_catalog("orders", "p", limit=2, access_token=TOKEN)
+    assert len(both) == 2 and not both.truncated
 
 
 @needs_testing_build
 def test_a_text_cannot_add_a_parameter(catalog):
     crab_r.search_catalog("a&pageSize=1000&scope=organizations/1", "p", limit=2, access_token=TOKEN)
     params = urllib.parse.parse_qs(urllib.parse.urlsplit(catalog.requests[0][1]).query)
-    assert sorted(params) == ["orderBy", "pageSize", "query"] and params["pageSize"] == ["2"]
+    assert sorted(params) == ["orderBy", "pageSize", "query"] and params["pageSize"] == ["1000"]
     assert params["query"] == [f"a&pageSize=1000&scope=organizations/1 {SCOPE}"]
 
 

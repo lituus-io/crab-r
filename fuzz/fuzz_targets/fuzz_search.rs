@@ -26,7 +26,7 @@ fuzz_target!(|data: &[u8]| {
         let (path, query) = url.split_once('?').expect("a search has a query string");
         assert_eq!(path, "https://h/v1/projects/p/locations/global:searchEntries");
         assert_eq!(query.matches('&').count(), 2, "{query}");
-        assert!(query.starts_with("query=") && query.ends_with("&pageSize=5&orderBy=relevance"));
+        assert!(query.starts_with("query=") && query.ends_with("&pageSize=1000&orderBy=relevance"));
         assert!(!query.contains(['#', '/', '?', ' ']), "{query}");
     }
 });
